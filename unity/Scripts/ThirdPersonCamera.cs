@@ -10,6 +10,10 @@ namespace Relict
         public Vector3 shoulder = new Vector3(0.55f, 0.1f, 0f);
         public float aimDistance = 2.6f;
         public bool aiming;
+        [Range(0, 1)] public float charge;   // bow draw amount, narrows the view slightly
+
+        float kick, zoom = 1f;
+        Camera cam;
 
         float yaw, pitch = 12f, shake, curDist;
         Vector3 idlePos; Quaternion idleRot; bool idleSet;
@@ -24,6 +28,9 @@ namespace Relict
         }
 
         public void Shake(float amount) { shake = Mathf.Max(shake, amount); }
+
+        // Recoil: pushes the view up a little, recovers on its own.
+        public void Kick(float degrees) { kick += degrees; }
 
         void LateUpdate()
         {
@@ -45,7 +52,13 @@ namespace Relict
                 pitch = Mathf.Clamp(pitch - d.y * sens * (GameSettings.InvertY ? -1f : 1f), -35f, 70f);
             }
 
-            Quaternion rot = Quaternion.Euler(pitch, yaw, 0);
+            kick = Mathf.Lerp(kick, 0f, 1f - Mathf.Exp(-12f * dt));
+            if (cam == null) cam = GetComponent<Camera>();
+            float wantZoom = (aiming ? 0.72f : 1f) * (1f - 0.08f * charge);
+            zoom = Mathf.Lerp(zoom, wantZoom, 1f - Mathf.Exp(-10f * dt));
+            if (cam) cam.fieldOfView = GameSettings.Fov * zoom;
+
+            Quaternion rot = Quaternion.Euler(pitch - kick, yaw, 0);
             Vector3 pivot = target.position + Vector3.up * height;
             float want = aiming ? aimDistance : distance;
             Vector3 offset = rot * (shoulder + Vector3.back * want);

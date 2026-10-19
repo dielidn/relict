@@ -31,7 +31,7 @@ namespace Relict
             hp = Mathf.Max(1f, m * k);
         }
 
-        public void Damage(float amount, Health attacker)
+        public void Damage(float amount, Health attacker, bool crit = false)
         {
             if (Dead) return;
             if (attacker != null && attacker.team == team) return;
@@ -39,7 +39,8 @@ namespace Relict
             hp -= amount;
             lastAttacker = attacker;
             Damaged?.Invoke(attacker, amount);
-            if (MatchManager.I) MatchManager.I.DamageNumber(transform.position + Vector3.up * 2.1f, amount, team == Team.Player);
+            if (MatchManager.I) MatchManager.I.DamageNumber(transform.position + Vector3.up * 2.1f, amount, team == Team.Player, crit);
+            if (team == Team.Player && amount >= 2f) SFX.Play(Sfx.Hurt, 0.7f);
             if (hp <= 0f) { hp = 0f; Died?.Invoke(attacker); }
         }
 

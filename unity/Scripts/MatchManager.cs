@@ -45,6 +45,11 @@ namespace Relict
         HeroKind chosen = HeroKind.Frog;
         int gold, kills, xp, level = 1, skillPoints;
         readonly int[] ranks = new int[4];
+        readonly int[] gear = new int[5];
+        int goldSpent;
+        bool upgradeOpen;
+        float hitT = -9f, hurtT = -9f, lastCoinSfx;
+        bool hitCrit, hitKill;
         readonly List<string> artNames = new List<string>();
         readonly List<int> artValues = new List<int>();
         float extractProgress, nextWave;
@@ -57,9 +62,15 @@ namespace Relict
         readonly List<RivalAI> rivals = new List<RivalAI>();
 
         // multipliers used by the hero
-        public float DamageMul => (1f + 0.15f * ranks[0]) * (1f + 0.25f * WeaponTier(chosen));
-        public float SpeedMul => 1f + 0.07f * ranks[2];
-        public float AttackSpeedMul => 1f + 0.1f * ranks[2];
+        public float DamageMul => (1f + 0.15f * ranks[0]) * (1f + 0.25f * WeaponTier(chosen)) * (1f + 0.12f * gear[0]);
+        public float SpeedMul => 1f + 0.07f * ranks[2] + 0.06f * gear[3];
+        public float AttackSpeedMul => (1f + 0.1f * ranks[2]) * (1f + 0.12f * gear[1]);
+        public bool UIOpen => upgradeOpen || settingsOpen;
+
+        // in-match gear bought with gold found in this run
+        static readonly string[] GearNames = { "Заточка оружия", "Лёгкая рука", "Толстая шкура", "Быстрые лапы", "Целебный настой" };
+        static readonly string[] GearDesc = { "+12% урона", "+12% темпа атаки и натяжения", "+25 к здоровью", "+6% скорости бега", "Сразу восстановить 60 здоровья" };
+        static readonly int[][] GearCost = { new[] { 50, 110, 200 }, new[] { 60, 130, 220 }, new[] { 50, 100, 180 }, new[] { 40, 90 }, new[] { 35 } };
         public float CooldownMul => 1f - 0.15f * ranks[3];
         public float AbilityPowerMul => 1f + 0.25f * ranks[3];
 
@@ -103,9 +114,47 @@ namespace Relict
             Cursor.visible = true;
             Time.timeScale = 1f;
             GameSettings.Load();
+            SFX.Warm();
+            Projectile.OnHit = OnProjectileHit;
             GameSettings.Apply(false);
             if (!GameSettings.HasNick) { nickPrompt = true; nickDraft = ""; }
             BuildExtraction();
+        }
+
+        void OnDestroy()
+        {
+            if (Projectile.OnHit == (System.Action<Health, Health, float, bool, bool>)OnProjectileHit) Projectile.OnHit = null;
+            Time.timeScale = 1f;
+        }
+
+        void OnProjectileHit(Health owner, Health victim, float dmg, bool crit, bool killed)
+        {
+            if (Hero == null || owner != Hero.Hp) return;
+            HitMarker(crit, killed);
+            SFX.Play(crit ? Sfx.ArrowCrit : Sfx.ArrowHit, 0.9f);
+            if (crit) HitStop(0.035f);
+        }
+
+        public void HitMarker(bool crit, bool kill)
+        {
+            hitT = Time.unscaledTime;
+            hitCrit = crit;
+            hitKill = kill;
+        }
+
+        bool stopping;
+        public void HitStop(float seconds)
+        {
+            if (!stopping && state == State.Playing) StartCoroutine(HitStopCo(seconds));
+        }
+
+        IEnumerator HitStopCo(float seconds)
+        {
+            stopping = true;
+            Time.timeScale = 0.05f;
+            yield return new WaitForSecondsRealtime(seconds);
+            if (state == State.Playing) Time.timeScale = 1f;
+            stopping = false;
         }
 
         public void StartMatch(HeroKind kind)
@@ -116,6 +165,7 @@ namespace Relict
             var go = Instantiate(prefab, playerSpawn.position, playerSpawn.rotation);
             Hero = go.GetComponent<HeroController>();
             if (GameSettings.HasNick) Hero.Hp.displayName = GameSettings.Nick;
+            Hero.Hp.Damaged += (a, amt) => { if (amt >= 2f) hurtT = Time.unscaledTime; };
             Hero.Hp.Died += k => StartCoroutine(EndAfter(2.5f, false, "Вы пали в джунглях. Добыча потеряна."));
             Camera.main.GetComponent<ThirdPersonCamera>().SetTarget(go.transform);
             TimeLeft = matchLength;
@@ -223,10 +273,12 @@ namespace Relict
             var kb = Keyboard.current;
             if (kb != null && kb.f11Key.wasPressedThisFrame) GameSettings.ToggleFullscreen();
             if (settingsOpen && kb != null && kb.escapeKey.wasPressedThisFrame) { CloseSettings(); return; }
+            if (upgradeOpen && kb != null && kb.escapeKey.wasPressedThisFrame) { SetUpgrades(false); return; }
+            if (state == State.Playing && kb != null && kb.tabKey.wasPressedThisFrame) SetUpgrades(!upgradeOpen);
             if (state == State.Playing || state == State.Paused)
             {
                 if (kb != null && kb.escapeKey.wasPressedThisFrame) SetPaused(state == State.Playing);
-                if (state == State.Playing && Cursor.lockState != CursorLockMode.Locked && Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame) LockCursor(true);
+                if (state == State.Playing && !UIOpen && Cursor.lockState != CursorLockMode.Locked && Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame) LockCursor(true);
             }
             if (state != State.Playing) return;
 
@@ -249,12 +301,7 @@ namespace Relict
                 for (int i = 0; i < 4; i++)
                 {
                     var key = i == 0 ? kb.digit1Key : i == 1 ? kb.digit2Key : i == 2 ? kb.digit3Key : kb.digit4Key;
-                    if (key.wasPressedThisFrame && ranks[i] < 3)
-                    {
-                        ranks[i]++; skillPoints--;
-                        if (i == 1) { Hero.Hp.SetMax(Hero.Hp.max + 30f); Hero.Hp.Heal(30f); }
-                        Toast(SkillNames[i] + " → ранг " + ranks[i]);
-                    }
+                    if (key.wasPressedThisFrame) BuySkill(i);
                 }
             }
 
@@ -293,8 +340,39 @@ namespace Relict
             if (TimeLeft <= 0f) End(false, "Джунгли сомкнулись. Вы не успели к лиане.");
         }
 
+        void SetUpgrades(bool open)
+        {
+            upgradeOpen = open;
+            LockCursor(!open);
+            SFX.Play(Sfx.Click, 0.6f, 0f);
+        }
+
+        bool BuySkill(int i)
+        {
+            if (skillPoints <= 0 || ranks[i] >= 3) return false;
+            ranks[i]++; skillPoints--;
+            if (i == 1 && Hero) { Hero.Hp.SetMax(Hero.Hp.max + 30f); Hero.Hp.Heal(30f); }
+            SFX.Play(Sfx.Buy, 0.8f, 0f);
+            Toast(SkillNames[i] + " → ранг " + ranks[i]);
+            return true;
+        }
+
+        int GearPrice(int i) => gear[i] < GearCost[i].Length ? GearCost[i][gear[i]] : (i == 4 ? GearCost[4][0] : -1);
+
+        void BuyGear(int i)
+        {
+            int price = GearPrice(i);
+            if (price < 0 || gold < price) return;
+            if (i == 4) { if (Hero.Hp.hp >= Hero.Hp.max) return; Hero.Hp.Heal(60f); }
+            else gear[i]++;
+            if (i == 2) { Hero.Hp.SetMax(Hero.Hp.max + 25f); Hero.Hp.Heal(25f); }
+            gold -= price; goldSpent += price;
+            SFX.Play(Sfx.Buy, 0.8f, 0f);
+        }
+
         void SetPaused(bool pause)
         {
+            if (pause) upgradeOpen = false;
             state = pause ? State.Paused : State.Playing;
             Time.timeScale = pause ? 0f : 1f;
             LockCursor(!pause);
@@ -310,6 +388,8 @@ namespace Relict
         {
             victory = win;
             resultLine = line;
+            upgradeOpen = false;
+            Time.timeScale = 1f;
             state = State.Result;
             LockCursor(false);
             earned = 0;
@@ -333,6 +413,8 @@ namespace Relict
             {
                 kills++;
                 AddXp(e.xp);
+                HitMarker(false, true);
+                SFX.Play(Sfx.Kill, 0.7f, 0.03f);
             }
             if (e.boss) Toast("Богомол-Страж повержен!");
         }
@@ -343,7 +425,7 @@ namespace Relict
             for (int i = 0; i < coins; i++) Pickup.Gold(r.transform.position, Mathf.Max(5, (r.gold + 60) / coins));
             for (int i = 0; i < r.artifacts.Count; i++)
                 Pickup.Artifact(r.transform.position + Random.insideUnitSphere.Flat() * 1.5f, r.artifacts[i], r.artifactValues[i], RandomModel(artifactModels));
-            if (killer != null && Hero != null && killer == Hero.Hp) { kills++; AddXp(120); }
+            if (killer != null && Hero != null && killer == Hero.Hp) { kills++; AddXp(120); HitMarker(false, true); SFX.Play(Sfx.Kill, 0.9f, 0f); HitStop(0.08f); }
             Toast(r.Hp.displayName + " выбит из матча");
         }
 
@@ -356,7 +438,8 @@ namespace Relict
                 level++;
                 skillPoints++;
                 if (Hero) Hero.Hp.Heal(Hero.Hp.max * 0.3f);
-                Toast("Уровень " + level + "! Очко навыка: клавиши 1–4");
+                Toast("Уровень " + level + "! Tab — потратить очко навыка");
+                SFX.Play(Sfx.LevelUp, 0.8f, 0f);
             }
         }
 
@@ -372,12 +455,16 @@ namespace Relict
             }
             switch (p.kind)
             {
-                case PickupKind.Gold: gold += p.amount; break;
-                case PickupKind.Heal: Hero.Hp.Heal(p.amount); break;
+                case PickupKind.Gold:
+                    gold += p.amount;
+                    if (Time.unscaledTime - lastCoinSfx > 0.06f) { lastCoinSfx = Time.unscaledTime; SFX.Play(Sfx.Coin, 0.6f, 0.08f); }
+                    break;
+                case PickupKind.Heal: Hero.Hp.Heal(p.amount); SFX.Play(Sfx.Buy, 0.5f); break;
                 case PickupKind.Artifact:
                     artNames.Add(p.title); artValues.Add(p.amount);
                     Toast("Артефакт «" + p.title + "» (" + p.amount + " зол.)");
                     VFX.Burst(p.transform.position, new Color(0.4f, 0.9f, 1f), 40, 4f, 0.2f);
+                    SFX.Play(Sfx.Artifact, 0.9f, 0f);
                     break;
             }
         }
@@ -426,19 +513,20 @@ namespace Relict
         }
 
         // ---------- feedback ----------
-        struct Floater { public Vector3 pos; public string text; public float t; public Color col; }
+        struct Floater { public Vector3 pos; public string text; public float t; public Color col; public bool crit; }
         readonly List<Floater> floaters = new List<Floater>();
         readonly List<KeyValuePair<string, float>> toasts = new List<KeyValuePair<string, float>>();
 
-        public void DamageNumber(Vector3 pos, float amount, bool toPlayer)
+        public void DamageNumber(Vector3 pos, float amount, bool toPlayer, bool crit = false)
         {
             if (amount < 1.5f || !GameSettings.DamageNumbers) return;
             floaters.Add(new Floater
             {
                 pos = pos + Random.insideUnitSphere * 0.3f,
-                text = Mathf.RoundToInt(amount).ToString(),
+                text = Mathf.RoundToInt(amount) + (crit ? "!" : ""),
+                crit = crit,
                 t = 0f,
-                col = toPlayer ? new Color(1f, 0.35f, 0.3f) : new Color(1f, 0.92f, 0.6f)
+                col = toPlayer ? new Color(1f, 0.35f, 0.3f) : crit ? new Color(1f, 0.6f, 0.15f) : new Color(1f, 0.92f, 0.6f)
             });
         }
 
@@ -537,7 +625,7 @@ namespace Relict
         void OnGUI()
         {
             Styles();
-            bool modal = settingsOpen || nickPrompt;
+            bool modal = settingsOpen || nickPrompt || (upgradeOpen && state == State.Playing);
             GUI.enabled = !modal;
             switch (state)
             {
@@ -547,6 +635,7 @@ namespace Relict
                 case State.Result: DrawResult(); break;
             }
             GUI.enabled = true;
+            if (upgradeOpen && state == State.Playing && !settingsOpen) DrawUpgrades();
             if (nickPrompt) DrawNickPrompt();
             else if (settingsOpen) DrawSettings();
         }
@@ -614,6 +703,24 @@ namespace Relict
             float s = S;
             var cam = Camera.main;
 
+            // damage flash at the screen edges
+            float hurtA = Mathf.Clamp01(1f - (Time.unscaledTime - hurtT) / 0.45f) * 0.45f;
+            if (Hero != null && Hero.Hp.hp < Hero.Hp.max * 0.3f) hurtA = Mathf.Max(hurtA, 0.12f + 0.08f * Mathf.Sin(Time.unscaledTime * 5f));
+            if (hurtA > 0.01f)
+            {
+                var hc = new Color(0.8f, 0.05f, 0.02f, hurtA);
+                float e = 70 * s;
+                for (int i = 0; i < 6; i++)
+                {
+                    var c = new Color(hc.r, hc.g, hc.b, hc.a * (1f - i / 6f));
+                    float o = i * e / 6f, w = e / 6f;
+                    Box(new Rect(0, o, Screen.width, w), c);
+                    Box(new Rect(0, Screen.height - o - w, Screen.width, w), c);
+                    Box(new Rect(o, 0, w, Screen.height), c);
+                    Box(new Rect(Screen.width - o - w, 0, w, Screen.height), c);
+                }
+            }
+
             // floaters
             for (int i = floaters.Count - 1; i >= 0; i--)
             {
@@ -623,7 +730,8 @@ namespace Relict
                 if (f.t > 0.9f) { floaters.RemoveAt(i); continue; }
                 Vector3 sp = cam.WorldToScreenPoint(f.pos + Vector3.up * f.t * 1.2f);
                 if (sp.z < 0) continue;
-                var st = new GUIStyle(center) { fontSize = Mathf.RoundToInt(26 * s), fontStyle = FontStyle.Bold };
+                float pop = f.crit ? 1f + 0.6f * Mathf.Clamp01(1f - f.t * 6f) : 1f;
+                var st = new GUIStyle(center) { fontSize = Mathf.RoundToInt((f.crit ? 36 : 26) * s * pop), fontStyle = FontStyle.Bold };
                 st.normal.textColor = new Color(f.col.r, f.col.g, f.col.b, 1f - f.t / 0.9f);
                 Shadow(new Rect(sp.x - 50 * s, Screen.height - sp.y - 20 * s, 100 * s, 40 * s), f.text, st);
             }
@@ -696,20 +804,18 @@ namespace Relict
                 Bar(new Rect(Screen.width * 0.5f - bw * 0.5f, 172 * s, bw, 18 * s), boss.Hp.hp / boss.Hp.max, new Color(0.85f, 0.3f, 0.9f));
             }
 
-            // skill points
-            if (skillPoints > 0)
+            // upgrade hint
+            if (!upgradeOpen)
             {
-                float sx = 40 * s, sy = Screen.height * 0.5f - 120 * s;
-                Box(new Rect(sx, sy, 400 * s, 200 * s), new Color(0.05f, 0.1f, 0.03f, 0.7f));
-                GUI.Label(new Rect(sx + 14 * s, sy + 8 * s, 380 * s, 30 * s), "<b>Очки навыков: " + skillPoints + "</b>", label);
-                for (int i = 0; i < 4; i++)
-                    GUI.Label(new Rect(sx + 14 * s, sy + (44 + i * 38) * s, 390 * s, 36 * s),
-                        "[" + (i + 1) + "] " + SkillNames[i] + " " + new string('●', ranks[i]) + new string('○', 3 - ranks[i]) + "  <size=" + Mathf.RoundToInt(14 * s) + ">" + SkillDesc[i] + "</size>", small);
+                string hint = skillPoints > 0 ? "<color=#b8ff73><b>Tab</b> — очков навыка: " + skillPoints + "</color>" : "<b>Tab</b> — улучшения";
+                float pulse = skillPoints > 0 ? 0.75f + 0.25f * Mathf.Sin(Time.unscaledTime * 4f) : 0.6f;
+                var hs = new GUIStyle(label) { fontSize = Mathf.RoundToInt(19 * s) };
+                hs.normal.textColor = new Color(1, 1, 1, pulse);
+                Shadow(new Rect(40 * s, Screen.height - 200 * s, 420 * s, 30 * s), hint, hs);
             }
 
             // crosshair
-            float cs = Hero.kind == HeroKind.Gecko && Mouse.current != null && Mouse.current.rightButton.isPressed ? 5f : 3f;
-            Box(new Rect(Screen.width * 0.5f - cs * s, Screen.height * 0.5f - cs * s, cs * 2 * s, cs * 2 * s), new Color(1, 1, 1, 0.8f));
+            DrawCrosshair();
 
             // toasts
             for (int i = 0; i < toasts.Count; i++)
@@ -773,6 +879,117 @@ namespace Relict
             GUI.Label(new Rect(x + 24 * s, y + 18 * s, w - 48 * s, 400 * s), body, label);
             if (GUI.Button(new Rect(Screen.width * 0.5f - 170 * s, y + 440 * s, 340 * s, 56 * s), "<b>В лагерь</b>", button))
                 SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
+        }
+
+        void Line(Vector2 a, Vector2 b, float width, Color c)
+        {
+            var m = GUI.matrix;
+            Vector2 d = b - a;
+            float ang = Mathf.Atan2(d.y, d.x) * Mathf.Rad2Deg;
+            GUIUtility.RotateAroundPivot(ang, a);
+            Box(new Rect(a.x, a.y - width * 0.5f, d.magnitude, width), c);
+            GUI.matrix = m;
+        }
+
+        void DrawCrosshair()
+        {
+            float s = S;
+            Vector2 c = new Vector2(Screen.width * 0.5f, Screen.height * 0.5f);
+            bool bow = Hero.kind == HeroKind.Gecko;
+            bool aim = bow && Mouse.current != null && Mouse.current.rightButton.isPressed;
+            float k = Hero.Charge01;
+            float gap = bow ? Mathf.Lerp(aim ? 10f : 18f, 3f, k) : 8f;
+            float len = bow ? 9f : 6f;
+            Color col = bow && k >= 1f ? new Color(0.7f, 1f, 0.5f, 0.95f) : new Color(1f, 1f, 1f, 0.85f);
+            float w = Mathf.Max(1.5f, 2f * s);
+            gap *= s; len *= s;
+            Box(new Rect(c.x - w * 0.5f, c.y - gap - len, w, len), col);
+            Box(new Rect(c.x - w * 0.5f, c.y + gap, w, len), col);
+            Box(new Rect(c.x - gap - len, c.y - w * 0.5f, len, w), col);
+            Box(new Rect(c.x + gap, c.y - w * 0.5f, len, w), col);
+            Box(new Rect(c.x - w * 0.5f, c.y - w * 0.5f, w, w), col);
+            if (bow && Hero.Charging)
+            {
+                float bw = 60 * s;
+                Box(new Rect(c.x - bw * 0.5f, c.y + 34 * s, bw, 5 * s), new Color(0, 0, 0, 0.5f));
+                Box(new Rect(c.x - bw * 0.5f, c.y + 34 * s, bw * k, 5 * s), k >= 1f ? new Color(0.7f, 1f, 0.45f) : new Color(1f, 0.9f, 0.6f));
+            }
+            // hit marker
+            float age = Time.unscaledTime - hitT;
+            if (age < 0.25f)
+            {
+                float a = 1f - age / 0.25f;
+                Color hc = hitKill ? new Color(1f, 0.3f, 0.25f, a) : hitCrit ? new Color(1f, 0.75f, 0.2f, a) : new Color(1f, 1f, 1f, a);
+                float r0 = (hitKill ? 10f : 7f) * s + age * 30f * s, r1 = r0 + (hitKill ? 12f : 8f) * s;
+                float hw = (hitKill || hitCrit ? 3f : 2f) * s;
+                for (int i = 0; i < 4; i++)
+                {
+                    float ang = (45f + 90f * i) * Mathf.Deg2Rad;
+                    var d = new Vector2(Mathf.Cos(ang), Mathf.Sin(ang));
+                    Line(c + d * r0, c + d * r1, hw, hc);
+                }
+            }
+        }
+
+        // ---------- Tab: character upgrades ----------
+        void DrawUpgrades()
+        {
+            float s = S;
+            Box(new Rect(0, 0, Screen.width, Screen.height), new Color(0, 0, 0, 0.45f));
+            float w = 1180 * s, h = 720 * s;
+            var r = new Rect((Screen.width - w) * 0.5f, (Screen.height - h) * 0.5f, w, h);
+            Panel(r);
+            GUI.Label(new Rect(r.x + 36 * s, r.y + 20 * s, w, 46 * s), "Улучшение героя", heading);
+            var rs = new GUIStyle(label) { alignment = TextAnchor.MiddleRight };
+            GUI.Label(new Rect(r.xMax - 436 * s, r.y + 22 * s, 400 * s, 40 * s), "ур. " + level + " · опыт " + xp + " / " + XpForNext(), rs);
+
+            float colW = (w - 108 * s) * 0.5f;
+            float lx = r.x + 36 * s, rx = lx + colW + 36 * s, top = r.y + 84 * s;
+            var desc = new GUIStyle(small) { wordWrap = true };
+            desc.normal.textColor = new Color(0.75f, 0.82f, 0.7f);
+
+            // skills
+            Panel(new Rect(lx, top, colW, 470 * s));
+            GUI.Label(new Rect(lx + 20 * s, top + 12 * s, colW, 36 * s), "Навыки · очков: " + (skillPoints > 0 ? "<color=#b8ff73><b>" + skillPoints + "</b></color>" : "0"), label);
+            for (int i = 0; i < 4; i++)
+            {
+                float y = top + (60 + i * 100) * s;
+                GUI.Label(new Rect(lx + 20 * s, y, colW - 180 * s, 32 * s), "<b>" + SkillNames[i] + "</b>  <size=" + Mathf.RoundToInt(15 * s) + "><color=#9fb08f>[" + (i + 1) + "]</color></size>", label);
+                GUI.Label(new Rect(lx + 20 * s, y + 32 * s, colW - 180 * s, 50 * s), SkillDesc[i] + " за ранг", desc);
+                for (int d = 0; d < 3; d++)
+                    Box(new Rect(lx + colW - 160 * s + d * 22 * s, y + 8 * s, 16 * s, 16 * s), d < ranks[i] ? Accent : new Color(1, 1, 1, 0.15f));
+                GUI.enabled = skillPoints > 0 && ranks[i] < 3;
+                if (GUI.Button(new Rect(lx + colW - 160 * s, y + 34 * s, 130 * s, 40 * s), ranks[i] >= 3 ? "Макс." : "Изучить", button)) BuySkill(i);
+                GUI.enabled = true;
+            }
+
+            // gear
+            Panel(new Rect(rx, top, colW, 470 * s));
+            GUI.Label(new Rect(rx + 20 * s, top + 12 * s, colW, 36 * s), "Снаряжение · <color=#ffd76a><b>" + gold + "</b> зол.</color>", label);
+            for (int i = 0; i < 5; i++)
+            {
+                float y = top + (60 + i * 80) * s;
+                int max = GearCost[i].Length;
+                string lvl = i == 4 ? "" : "  <size=" + Mathf.RoundToInt(15 * s) + "><color=#9fb08f>" + gear[i] + "/" + max + "</color></size>";
+                GUI.Label(new Rect(rx + 20 * s, y, colW - 200 * s, 32 * s), "<b>" + GearNames[i] + "</b>" + lvl, label);
+                GUI.Label(new Rect(rx + 20 * s, y + 30 * s, colW - 200 * s, 40 * s), GearDesc[i], desc);
+                int price = GearPrice(i);
+                bool maxed = price < 0;
+                GUI.enabled = !maxed && gold >= price && !(i == 4 && Hero.Hp.hp >= Hero.Hp.max);
+                if (GUI.Button(new Rect(rx + colW - 180 * s, y + 10 * s, 160 * s, 44 * s), maxed ? "Макс." : price + " зол.", button)) BuyGear(i);
+                GUI.enabled = true;
+            }
+
+            // stats line
+            float sy = top + 490 * s;
+            float rate = Hero.kind == HeroKind.Gecko ? AttackSpeedMul / 0.75f : AttackSpeedMul / Hero.attackInterval;
+            string stats = "Здоровье <b>" + Mathf.CeilToInt(Hero.Hp.hp) + "/" + Mathf.RoundToInt(Hero.Hp.max) + "</b>   ·   Урон <b>" + Mathf.RoundToInt(Hero.damage * DamageMul) + "</b>" +
+                           "   ·   " + (Hero.kind == HeroKind.Gecko ? "Полное натяжение <b>" + (0.75f / AttackSpeedMul).ToString("0.00") + " с</b>" : "Ударов в секунду <b>" + rate.ToString("0.0") + "</b>") +
+                           "   ·   Скорость <b>+" + Mathf.RoundToInt((SpeedMul - 1f) * 100f) + "%</b>   ·   Перезарядка Q <b>" + (Hero.abilityCooldown * CooldownMul).ToString("0.#") + " с</b>";
+            GUI.Label(new Rect(lx, sy, w - 72 * s, 34 * s), stats, label);
+            GUI.Label(new Rect(lx, sy + 40 * s, w - 72 * s, 30 * s),
+                "<color=#c9b98a>Потраченное золото не попадёт в казну лагеря" + (goldSpent > 0 ? " (потрачено: " + goldSpent + ")" : "") + ".</color>", small);
+            if (GUI.Button(new Rect(r.xMax - 236 * s, r.yMax - 76 * s, 200 * s, 52 * s), "<b>Закрыть</b> · Tab", button)) SetUpgrades(false);
         }
 
         // ---------- nickname ----------

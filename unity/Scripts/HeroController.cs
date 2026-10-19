@@ -22,7 +22,8 @@ namespace Relict
         ThirdPersonCamera tpc;
         Vector3 vel, knock;
         float yVel, airTime, attackReady, abilityReady, lockUntil, armorUntil, rollUntil, rollReady, leapStart;
-        bool leaping, leftGround, flip;
+        bool leaping, leftGround, flip, charging, fullPlayed;
+        float chargeStart;
         string cur;
         Light armorLight;
 
@@ -35,6 +36,9 @@ namespace Relict
         public float AbilityTotal { get; private set; } = 1f;
         public bool ArmorOn => Time.time < armorUntil;
         public float RollLeft => Mathf.Max(0f, rollReady - Time.time);
+        public bool Charging => charging;
+        public float Charge01 => charging ? Mathf.Clamp01((Time.time - chargeStart) / ChargeTime) : 0f;
+        float ChargeTime => 0.75f / (MatchManager.I ? MatchManager.I.AttackSpeedMul : 1f);
         public string AbilityName => kind == HeroKind.Frog ? "Прыжок" : "Корковая броня";
 
         void Awake()
@@ -103,7 +107,8 @@ namespace Relict
             bool aiming = active && kind == HeroKind.Gecko && ms != null && ms.rightButton.isPressed;
             if (tpc) tpc.aiming = aiming;
             float speedMul = mm ? mm.SpeedMul : 1f;
-            float spd = (sprint && !aiming ? runSpeed : walkSpeed) * speedMul;
+            float spd = (sprint && !aiming && !charging ? runSpeed : walkSpeed) * speedMul;
+            if (charging) spd *= 0.6f;
             if (Time.time < lockUntil) spd *= 0.4f;
 
             bool grounded = cc.isGrounded;
@@ -140,21 +145,35 @@ namespace Relict
             }
 
             // facing
-            Vector3 face = (aiming || Time.time < lockUntil) ? fwd : new Vector3(vel.x, 0, vel.z);
+            Vector3 face = (aiming || charging || Time.time < lockUntil) ? fwd : new Vector3(vel.x, 0, vel.z);
             if (face.sqrMagnitude > 0.04f)
                 transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.LookRotation(face), 1f - Mathf.Exp(-14f * dt));
 
             if (active)
             {
-                bool atk = (ms != null && ms.leftButton.isPressed) || simAttack;
+                bool atk = ((ms != null && ms.leftButton.isPressed) || simAttack) && !mm.UIOpen;
                 bool abl = (kb != null && kb.qKey.wasPressedThisFrame) || simAbility;
                 bool rol = (kb != null && kb.leftCtrlKey.wasPressedThisFrame) || simRoll;
                 simAbility = false; simRoll = false;
-                if (atk && Time.time >= attackReady && !leaping && !rolling) Attack(fwd);
+                if (kind == HeroKind.Frog)
+                {
+                    if (atk && Time.time >= attackReady && !leaping && !rolling) Attack(fwd);
+                }
+                else
+                {
+                    if (!charging && atk && Time.time >= attackReady && !leaping) StartCharge();
+                    if (charging)
+                    {
+                        if (!fullPlayed && Charge01 >= 1f) { fullPlayed = true; SFX.Play(Sfx.BowFull, 0.7f, 0f); }
+                        if (!atk) ReleaseArrow(fwd, aiming);
+                    }
+                }
                 if (abl && Time.time >= abilityReady && !rolling) Ability(fwd);
                 if (kind == HeroKind.Frog && rol && Time.time >= rollReady && grounded && !leaping) Roll(wish.sqrMagnitude > 0.01f ? wish : fwd);
             }
 
+            if (!active && charging) charging = false;
+            if (tpc) tpc.charge = Charge01;
             hp.armor = ArmorOn ? 0.7f : (rolling ? 1f : 0f);
             if (armorLight) armorLight.enabled = ArmorOn;
 
@@ -162,7 +181,7 @@ namespace Relict
             if (anim == null) return;
             if (hp.Dead) { anim.speed = 0.5f; Play("Idle", 0.3f); return; }
             float hs = new Vector3(vel.x, 0, vel.z).magnitude;
-            if (leaping || rolling || Time.time < lockUntil) { }
+            if (leaping || rolling || charging || Time.time < lockUntil) { }
             else if (airTime > 0.2f) { anim.speed = 1f; Play("Jump", 0.1f); }
             else if (hs > 0.4f)
             {
@@ -185,6 +204,7 @@ namespace Relict
                 Restart("Attack");
                 anim.speed = 1.9f;
                 vel += fwd * 2.5f;
+                SFX.Play(Sfx.Swoosh, 0.6f, 0.15f);
                 StartCoroutine(MeleeHit(fwd, dmg));
             }
             else
@@ -204,7 +224,13 @@ namespace Relict
             flip = !flip;
             VFX.Slash(transform.position, fwd, new Color(0.55f, 1f, 0.75f), 1.5f, flip);
             int n = Combat.Melee(transform.position, fwd, 2.3f, 160f, dmg, hp, 5f);
-            if (n > 0 && tpc) tpc.Shake(0.12f);
+            if (n > 0)
+            {
+                if (tpc) tpc.Shake(0.14f);
+                SFX.Play(Sfx.MeleeHit, 0.9f);
+                MatchManager.I.HitStop(0.05f);
+                MatchManager.I.HitMarker(false, false);
+            }
         }
 
         // Soft aim assist: snap to a hostile near the crosshair, or to one right in front of the hero.
@@ -233,9 +259,42 @@ namespace Relict
             return best.transform.position + (bcc ? bcc.center : Vector3.up);
         }
 
-        Vector3 AimPoint()
+        void StartCharge()
         {
-            var assist = AssistTarget();
+            charging = true;
+            fullPlayed = false;
+            chargeStart = Time.time;
+            Restart("Attack", 0.08f);
+            anim.speed = 0.3f;
+            SFX.Play(Sfx.BowDraw, 0.5f, 0.05f);
+        }
+
+        void ReleaseArrow(Vector3 fwd, bool aimed)
+        {
+            var mm = MatchManager.I;
+            float k = Charge01;
+            charging = false;
+            bool heavy = k >= 0.999f;
+            float mul = Mathf.Lerp(0.65f, 1.6f, k);
+            float speed = Mathf.Lerp(42f, 78f, k);
+            float spread = (aimed ? 0.5f : 2.2f) * (1f - k);
+            Vector3 origin = transform.position + Vector3.up * 1.35f + fwd * 0.45f + transform.right * 0.15f;
+            Vector3 aim = AimPoint(!aimed);
+            Vector3 dir = (aim - origin).normalized;
+            dir = Quaternion.Euler(Random.Range(-spread, spread), Random.Range(-spread, spread), 0) * dir;
+            Projectile.Fire(origin, dir * speed, damage * mm.DamageMul * mul, hp, new Color(1f, 0.8f, 0.45f), heavy ? 1 : 0, heavy);
+            attackReady = Time.time + 0.2f / mm.AttackSpeedMul;
+            lockUntil = Time.time + 0.2f;
+            transform.rotation = Quaternion.LookRotation(fwd);
+            anim.speed = 2.5f;
+            SFX.Play(Sfx.BowRelease, heavy ? 1f : 0.75f, 0.05f);
+            if (tpc) { tpc.Kick(heavy ? 2.4f : 1.1f); tpc.Shake(heavy ? 0.12f : 0.04f); }
+            VFX.Burst(origin + dir * 0.4f, new Color(1f, 0.9f, 0.6f), heavy ? 10 : 4, 2f, 0.06f, 0.2f, 0f);
+        }
+
+        Vector3 AimPoint(bool useAssist = true)
+        {
+            var assist = useAssist ? AssistTarget() : null;
             if (assist.HasValue) return assist.Value;
             var ray = new Ray(cam.position, cam.forward);
             var hits = Physics.RaycastAll(ray, 150f, ~0, QueryTriggerInteraction.Ignore);
@@ -277,7 +336,9 @@ namespace Relict
             vel *= 0.15f;
             var mm = MatchManager.I;
             float dmg = damage * 2.2f * mm.DamageMul * mm.AbilityPowerMul;
-            Combat.Melee(transform.position, transform.forward, 3.8f, 360f, dmg, hp, 9f);
+            int n = Combat.Melee(transform.position, transform.forward, 3.8f, 360f, dmg, hp, 9f);
+            SFX.Play(Sfx.Leap, 1f);
+            if (n > 0) { MatchManager.I.HitStop(0.07f); MatchManager.I.HitMarker(false, false); }
             VFX.Ring(transform.position + Vector3.up * 0.15f, new Color(0.5f, 1f, 0.6f));
             if (tpc) tpc.Shake(0.5f);
         }
