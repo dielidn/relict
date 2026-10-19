@@ -269,7 +269,7 @@ namespace Relict
             if (nextWave <= 0f)
             {
                 nextWave = ExtractOpen ? 22f : 35f;
-                int alive = FindObjectsByType<EnemyAI>(FindObjectsSortMode.None).Count(e => !e.Dying);
+                int alive = FindObjectsByType<EnemyAI>(FindObjectsInactive.Exclude).Count(e => !e.Dying);
                 if (alive < 26 && Hero != null)
                 {
                     Vector3 hp = Hero.transform.position;

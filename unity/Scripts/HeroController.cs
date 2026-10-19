@@ -26,6 +26,10 @@ namespace Relict
         string cur;
         Light armorLight;
 
+        // Simulated input for automated play-tests (added on top of real input).
+        public static Vector2 simMove;
+        public static bool simSprint, simJump, simAttack, simAbility, simRoll;
+
         public Health Hp => hp;
         public float AbilityLeft => Mathf.Max(0f, abilityReady - Time.time);
         public float AbilityTotal { get; private set; } = 1f;
@@ -93,6 +97,7 @@ namespace Relict
                 if (kb.aKey.isPressed) wish -= right;
                 sprint = kb.leftShiftKey.isPressed;
             }
+            if (active && simMove.sqrMagnitude > 0f) { wish += fwd * simMove.y + right * simMove.x; sprint |= simSprint; }
             if (wish.sqrMagnitude > 1f) wish.Normalize();
 
             bool aiming = active && kind == HeroKind.Gecko && ms != null && ms.rightButton.isPressed;
@@ -116,7 +121,9 @@ namespace Relict
             }
 
             if (grounded && yVel < 0f) yVel = -2f;
-            if (active && grounded && kb != null && kb.spaceKey.wasPressedThisFrame && !leaping && !rolling)
+            bool jumpPressed = (kb != null && kb.spaceKey.wasPressedThisFrame) || simJump;
+            simJump = false;
+            if (active && grounded && jumpPressed && !leaping && !rolling)
             {
                 yVel = Mathf.Sqrt(2f * jumpHeight * -gravity);
                 Restart("Jump", 0.08f);
@@ -137,11 +144,15 @@ namespace Relict
             if (face.sqrMagnitude > 0.04f)
                 transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.LookRotation(face), 1f - Mathf.Exp(-14f * dt));
 
-            if (active && ms != null && kb != null)
+            if (active)
             {
-                if (ms.leftButton.isPressed && Time.time >= attackReady && !leaping && !rolling) Attack(fwd);
-                if (kb.qKey.wasPressedThisFrame && Time.time >= abilityReady && !rolling) Ability(fwd);
-                if (kind == HeroKind.Frog && kb.leftCtrlKey.wasPressedThisFrame && Time.time >= rollReady && grounded && !leaping) Roll(wish.sqrMagnitude > 0.01f ? wish : fwd);
+                bool atk = (ms != null && ms.leftButton.isPressed) || simAttack;
+                bool abl = (kb != null && kb.qKey.wasPressedThisFrame) || simAbility;
+                bool rol = (kb != null && kb.leftCtrlKey.wasPressedThisFrame) || simRoll;
+                simAbility = false; simRoll = false;
+                if (atk && Time.time >= attackReady && !leaping && !rolling) Attack(fwd);
+                if (abl && Time.time >= abilityReady && !rolling) Ability(fwd);
+                if (kind == HeroKind.Frog && rol && Time.time >= rollReady && grounded && !leaping) Roll(wish.sqrMagnitude > 0.01f ? wish : fwd);
             }
 
             hp.armor = ArmorOn ? 0.7f : (rolling ? 1f : 0f);
