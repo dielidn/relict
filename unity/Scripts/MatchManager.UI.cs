@@ -244,13 +244,13 @@ namespace Relict
             }
 
             // controls (right)
-            var cr = new Rect(W - cw - 48 * s, 0, cw, 380 * s);
+            var cr = new Rect(W - cw - 48 * s, 0, cw, 420 * s);
             cr.y = cy + 180 * s;
             Card(cr);
             Caption(new Rect(cr.x + 24 * s, cr.y + 18 * s, 300 * s, 24 * s), "Управление", CAccent);
             string[][] keys = {
-                new[] { "WASD", "Движение" }, new[] { "Shift", "Бег" }, new[] { "Space", "Прыжок" },
-                new[] { "ЛКМ", "Атака · у лука удерживать" }, new[] { "Q", "Способность" }, new[] { "Tab", "Улучшения в матче" },
+                new[] { "WASD", "Движение" }, new[] { "Shift", "Бег" }, new[] { "Space", "Прыжок · дважды" },
+                new[] { "ЛКМ", "Атака · у лука удерживать" }, new[] { "Q", "Способность" }, new[] { "Ctrl", "Уворот · на бегу подкат" }, new[] { "Tab", "Улучшения в матче" },
                 new[] { "Esc", "Пауза" }, new[] { "F11", "Полный экран" } };
             for (int i = 0; i < keys.Length; i++)
             {
@@ -263,9 +263,9 @@ namespace Relict
             // hero cards (bottom)
             float hw = 440 * s, hh = 330 * s, gap = 28 * s, hy = H - hh - 44 * s;
             DrawHeroCard(new Rect(W * 0.5f - hw - gap * 0.5f, hy, hw, hh), HeroKind.Frog, "Лягушка-древолаз", "Ближний бой",
-                new[] { 4, 4, 5, 1 }, new[] { new[] { "Q", "Прыжок по площади" }, new[] { "Ctrl", "Перекат" } });
+                new[] { 4, 4, 5, 1 }, new[] { new[] { "Q", "Прыжок по площади" }, new[] { "ЛКМ", "Серия, удар с неба" } });
             DrawHeroCard(new Rect(W * 0.5f + gap * 0.5f, hy, hw, hh), HeroKind.Gecko, "Геккон-лучник", "Дальний бой",
-                new[] { 3, 4, 3, 5 }, new[] { new[] { "Q", "Корковая броня" }, new[] { "ПКМ", "Прицел" } });
+                new[] { 3, 4, 3, 5 }, new[] { new[] { "Q", "Корковая броня" }, new[] { "ПКМ", "Прицел, выстрел в голову" } });
         }
 
         void DrawHeroCard(Rect r, HeroKind k, string name, string role, int[] stats, string[][] abilities)
@@ -392,7 +392,22 @@ namespace Relict
             float total = slot * 3 + sg * 2, sx = W * 0.5f - total * 0.5f, sy = H - slot - 52 * s;
             AbilitySlot(new Rect(sx, sy, slot, slot), "ЛКМ", frog ? "Удар" : "Выстрел", frog ? 0f : 0f, 1f, frog ? 0f : Hero.Charge01);
             AbilitySlot(new Rect(sx + slot + sg, sy, slot, slot), "Q", Hero.AbilityName, Hero.AbilityLeft, Hero.AbilityTotal, Hero.ArmorOn ? 1f : 0f, true);
-            AbilitySlot(new Rect(sx + (slot + sg) * 2, sy, slot, slot), frog ? "Ctrl" : "ПКМ", frog ? "Перекат" : "Прицел", frog ? Hero.RollLeft : 0f, 1.1f, 0f);
+            float dm = Hero.DodgeMeter;
+            int charges = Mathf.FloorToInt(dm);
+            var dr = new Rect(sx + (slot + sg) * 2, sy, slot, slot);
+            AbilitySlot(dr, "Ctrl", "Уворот", charges == 0 ? (1f - dm) * Hero.dodgeRecharge : 0f, Hero.dodgeRecharge, 0f);
+            Pips(new Rect(dr.x + 14 * s, dr.yMax - 12 * s, dr.width - 28 * s, 5 * s), charges, Hero.dodgeCharges, CAccent);
+
+            // perfect dodge / combo banners
+            float ba = Time.unscaledTime - bannerT;
+            if (ba < 1.8f && !string.IsNullOrEmpty(bannerTitle))
+            {
+                float a = Mathf.Clamp01(1.8f - ba) * Mathf.Clamp01(ba * 8f);
+                float pop = 1f + 0.25f * Mathf.Clamp01(1f - ba * 5f);
+                Txt(new Rect(0, H * 0.28f, W, 50 * s), bannerTitle, St('h', Mathf.Round(34f * pop)), new Color(0.75f, 1f, 1f, a), true);
+                var bs = St('b', 18f, TextAnchor.MiddleCenter);
+                Txt(new Rect(0, H * 0.28f + 46 * s, W, 30 * s), bannerSub, bs, new Color(1f, 1f, 1f, a * 0.85f), true);
+            }
 
             // timer + status (top centre)
             var tp = new Rect(W * 0.5f - 90 * s, 22 * s, 180 * s, 58 * s);
@@ -608,7 +623,7 @@ namespace Relict
             float gap = (bow ? Mathf.Lerp(aim ? 10f : 18f, 3f, k) : 8f) * s;
             float len = (bow ? 9f : 6f) * s;
             float w = Mathf.Max(1.5f, 2f * s);
-            Color col = bow && k >= 1f ? CAccent : new Color(1f, 1f, 1f, 0.9f);
+            Color col = Hero.PerfectReady ? CGold : bow && k >= 1f ? CAccent : new Color(1f, 1f, 1f, 0.9f);
             Color sh = new Color(0, 0, 0, 0.45f);
             for (int pass = 0; pass < 2; pass++)
             {
@@ -620,6 +635,8 @@ namespace Relict
                 RR(new Rect(c.x + gap + o, c.y - w * 0.5f + o, len, w), cc, w * 0.5f);
                 RR(new Rect(c.x - w * 0.6f + o, c.y - w * 0.6f + o, w * 1.2f, w * 1.2f), cc, w * 0.6f);
             }
+            if (!bow && Hero.Combo >= 1)
+                Txt(new Rect(c.x + 22 * s, c.y - 30 * s, 80 * s, 30 * s), "×" + (Hero.Combo + 1), St('h', Hero.Combo == 2 ? 22f : 17f), Hero.Combo == 2 ? CGold : new Color(1, 1, 1, 0.85f), true);
             if (bow && Hero.Charging)
             {
                 float bw = 64 * s;
@@ -711,7 +728,7 @@ namespace Relict
                 new[] { "Здоровье", Mathf.CeilToInt(Hero.Hp.hp) + " / " + Mathf.RoundToInt(Hero.Hp.max) },
                 new[] { "Урон", Mathf.RoundToInt(Hero.damage * DamageMul).ToString() },
                 new[] { rateLabel, rateVal },
-                new[] { "Скорость", "+" + Mathf.RoundToInt((SpeedMul - 1f) * 100f) + "%" },
+                new[] { "Шанс крита", Mathf.RoundToInt(CritChance * 100f) + "% · ×" + Hero.critMultiplier.ToString("0.0") },
                 new[] { "Перезарядка Q", (Hero.abilityCooldown * CooldownMul).ToString("0.#") + " с" } };
             for (int i = 0; i < 5; i++)
             {

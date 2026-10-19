@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -15,17 +16,25 @@ namespace Relict
         public float walkSpeed = 3.3f, runSpeed = 6.4f, jumpHeight = 1.4f, gravity = -24f;
         public float damage = 24f, attackInterval = 0.55f, abilityCooldown = 7f;
 
+        [Header("Mobility")]
+        public int dodgeCharges = 2;
+        public float dodgeRecharge = 1.5f;
+        public float critMultiplier = 1.8f;
+
         CharacterController cc;
         Animator anim;
         Health hp;
         Transform cam;
         ThirdPersonCamera tpc;
-        Vector3 vel, knock;
-        float yVel, airTime, attackReady, abilityReady, lockUntil, armorUntil, rollUntil, rollReady, leapStart;
-        bool leaping, leftGround, flip, charging, fullPlayed;
-        float chargeStart;
+        Vector3 vel, knock, dashDir;
+        float yVel, airTime, attackReady, abilityReady, lockUntil, armorUntil, rollUntil, leapStart;
+        float coyote, jumpBuffer, dodgeMeter, perfectUntil, lastSwing = -9f, chargeStart;
+        int airJumps, combo;
+        float plungeStart;
+        bool leaping, leftGround, flip, charging, fullPlayed, sliding, plunging;
         string cur;
         Light armorLight;
+        readonly HashSet<Health> slideHit = new HashSet<Health>();
 
         // Simulated input for automated play-tests (added on top of real input).
         public static Vector2 simMove;
@@ -35,7 +44,9 @@ namespace Relict
         public float AbilityLeft => Mathf.Max(0f, abilityReady - Time.time);
         public float AbilityTotal { get; private set; } = 1f;
         public bool ArmorOn => Time.time < armorUntil;
-        public float RollLeft => Mathf.Max(0f, rollReady - Time.time);
+        public float DodgeMeter => dodgeMeter;                  // 0..dodgeCharges
+        public bool PerfectReady => Time.time < perfectUntil;
+        public int Combo => Time.time - lastSwing < 0.9f ? combo : -1;
         public bool Charging => charging;
         public float Charge01 => charging ? Mathf.Clamp01((Time.time - chargeStart) / ChargeTime) : 0f;
         float ChargeTime => 0.75f / (MatchManager.I ? MatchManager.I.AttackSpeedMul : 1f);
@@ -47,6 +58,7 @@ namespace Relict
             hp = GetComponent<Health>();
             anim = GetComponentInChildren<Animator>();
             hp.Init(Team.Player, maxHp, kind == HeroKind.Frog ? "Лягушка" : "Геккон");
+            dodgeMeter = dodgeCharges;
         }
 
         void Start()
@@ -60,7 +72,11 @@ namespace Relict
                 l.transform.SetParent(transform, false); l.transform.localPosition = Vector3.up * 1.1f;
                 l.enabled = false; armorLight = l;
             }
-            hp.Damaged += (a, amt) => { if (tpc) tpc.Shake(Mathf.Clamp(amt / 40f, 0.1f, 0.5f)); };
+            hp.Damaged += (a, amt) =>
+            {
+                if (amt <= 0.01f && Time.time < rollUntil && a != null) PerfectDodge();
+                else if (tpc) tpc.Shake(Mathf.Clamp(amt / 40f, 0.1f, 0.5f));
+            };
         }
 
         public void Knock(Vector3 v) { if (Time.time >= rollUntil) knock += v; }
@@ -77,6 +93,24 @@ namespace Relict
             if (anim == null) return;
             cur = s;
             anim.CrossFadeInFixedTime(s, fade, 0, 0f);
+        }
+
+        // ---------- crits ----------
+        bool RollCrit(float extraChance = 0f)
+        {
+            if (Time.time < perfectUntil) { perfectUntil = 0f; return true; }
+            float chance = (MatchManager.I ? MatchManager.I.CritChance : 0.15f) + extraChance;
+            return Random.value < chance;
+        }
+
+        void PerfectDodge()
+        {
+            if (Time.time < perfectUntil) return;
+            perfectUntil = Time.time + 2.5f;
+            SFX.Play(Sfx.BowFull, 0.9f, 0f);
+            VFX.Burst(transform.position + Vector3.up, new Color(0.7f, 1f, 1f), 30, 4f, 0.15f, 0.5f, 0f);
+            MatchManager.I.SlowMo(0.35f, 0.3f);
+            MatchManager.I.Banner("ИДЕАЛЬНЫЙ УВОРОТ", "следующая атака — крит");
         }
 
         void Update()
@@ -113,27 +147,54 @@ namespace Relict
 
             bool grounded = cc.isGrounded;
             bool rolling = Time.time < rollUntil;
+            if (sliding && !rolling) sliding = false;
+
+            // dodge charges refill
+            if (dodgeMeter < dodgeCharges) dodgeMeter = Mathf.Min(dodgeCharges, dodgeMeter + dt / dodgeRecharge);
+
             if (rolling)
             {
-                // keep roll velocity
+                float keep = sliding ? 7f : 4f;
+                Vector3 hv = Vector3.MoveTowards(new Vector3(vel.x, 0, vel.z), dashDir * keep, (sliding ? 9f : 14f) * dt);
+                vel = hv;
+                if (sliding) SlideHits();
             }
-            else if (!leaping)
+            else if (!leaping && !plunging)
             {
-                float accel = grounded ? 40f : 10f;
+                float accel = grounded ? 40f : 18f;
                 Vector3 hv = new Vector3(vel.x, 0, vel.z);
                 hv = Vector3.MoveTowards(hv, wish * spd, accel * dt);
                 vel = hv;
             }
 
-            if (grounded && yVel < 0f) yVel = -2f;
+            // jumping: coyote time, input buffer, double jump
+            coyote = grounded ? 0.12f : coyote - dt;
+            if (grounded) airJumps = 1;
             bool jumpPressed = (kb != null && kb.spaceKey.wasPressedThisFrame) || simJump;
             simJump = false;
-            if (active && grounded && jumpPressed && !leaping && !rolling)
+            if (jumpPressed) jumpBuffer = 0.15f; else jumpBuffer -= dt;
+            if (grounded && yVel < 0f) yVel = -2f;
+            if (active && jumpBuffer > 0f && !leaping && !plunging && !sliding)
             {
-                yVel = Mathf.Sqrt(2f * jumpHeight * -gravity);
-                Restart("Jump", 0.08f);
+                if (coyote > 0f)
+                {
+                    yVel = Mathf.Sqrt(2f * jumpHeight * -gravity);
+                    coyote = 0f; jumpBuffer = 0f;
+                    Restart("Jump", 0.08f);
+                }
+                else if (airJumps > 0 && !grounded)
+                {
+                    airJumps--;
+                    yVel = Mathf.Sqrt(2f * jumpHeight * 0.85f * -gravity);
+                    jumpBuffer = 0f;
+                    if (wish.sqrMagnitude > 0.01f) vel = wish * Mathf.Max(spd, new Vector3(vel.x, 0, vel.z).magnitude);
+                    Restart("Jump", 0.05f);
+                    VFX.Burst(transform.position + Vector3.up * 0.2f, new Color(0.8f, 1f, 0.8f), 14, 2.5f, 0.12f, 0.35f, 0f, true);
+                    SFX.Play(Sfx.Swoosh, 0.5f, 0.2f);
+                }
             }
-            yVel += gravity * dt;
+
+            yVel += gravity * dt * (plunging ? 2.2f : 1f);
             knock = Vector3.MoveTowards(knock, Vector3.zero, 18f * dt);
             cc.Move((vel + knock + Vector3.up * yVel) * dt);
             airTime = cc.isGrounded ? 0f : airTime + dt;
@@ -143,45 +204,55 @@ namespace Relict
                 if (!cc.isGrounded) leftGround = true;
                 else if (leftGround || Time.time - leapStart > 1.6f) LandLeap();
             }
+            if (plunging && (cc.isGrounded || Time.time - plungeStart > 2f)) LandPlunge();
 
             // facing
-            Vector3 face = (aiming || charging || Time.time < lockUntil) ? fwd : new Vector3(vel.x, 0, vel.z);
+            Vector3 face = (aiming || charging || Time.time < lockUntil) ? fwd : rolling ? dashDir : new Vector3(vel.x, 0, vel.z);
             if (face.sqrMagnitude > 0.04f)
                 transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.LookRotation(face), 1f - Mathf.Exp(-14f * dt));
 
             if (active)
             {
                 bool atk = ((ms != null && ms.leftButton.isPressed) || simAttack) && !mm.UIOpen;
+                bool atkDown = ((ms != null && ms.leftButton.wasPressedThisFrame) || simAttack) && !mm.UIOpen;
                 bool abl = (kb != null && kb.qKey.wasPressedThisFrame) || simAbility;
-                bool rol = (kb != null && kb.leftCtrlKey.wasPressedThisFrame) || simRoll;
+                bool rol = (kb != null && (kb.leftCtrlKey.wasPressedThisFrame || kb.cKey.wasPressedThisFrame)) || simRoll;
                 simAbility = false; simRoll = false;
+
+                if (rol && dodgeMeter >= 1f && !leaping && !plunging)
+                {
+                    bool slide = grounded && sprint && new Vector3(vel.x, 0, vel.z).magnitude > walkSpeed * speedMul + 0.5f;
+                    Vector3 dir = wish.sqrMagnitude > 0.01f ? wish : (kind == HeroKind.Gecko && !slide ? -fwd : fwd);
+                    Dodge(dir, slide);
+                }
+
                 if (kind == HeroKind.Frog)
                 {
-                    if (atk && Time.time >= attackReady && !leaping && !rolling) Attack(fwd);
+                    if (atkDown && !grounded && airTime > 0.12f && !leaping && !plunging && !rolling) StartPlunge();
+                    else if (atk && Time.time >= attackReady && !leaping && !rolling && !plunging) Attack(fwd);
                 }
                 else
                 {
-                    if (!charging && atk && Time.time >= attackReady && !leaping) StartCharge();
+                    if (!charging && atk && Time.time >= attackReady && !leaping && !rolling) StartCharge();
                     if (charging)
                     {
                         if (!fullPlayed && Charge01 >= 1f) { fullPlayed = true; SFX.Play(Sfx.BowFull, 0.7f, 0f); }
                         if (!atk) ReleaseArrow(fwd, aiming);
                     }
                 }
-                if (abl && Time.time >= abilityReady && !rolling) Ability(fwd);
-                if (kind == HeroKind.Frog && rol && Time.time >= rollReady && grounded && !leaping) Roll(wish.sqrMagnitude > 0.01f ? wish : fwd);
+                if (abl && Time.time >= abilityReady && !rolling && !plunging) Ability(fwd);
             }
 
-            if (!active && charging) charging = false;
+            if ((!active || rolling) && charging) charging = false;
             if (tpc) tpc.charge = Charge01;
-            hp.armor = ArmorOn ? 0.7f : (rolling ? 1f : 0f);
+            hp.armor = rolling ? 1f : ArmorOn ? 0.7f : 0f;
             if (armorLight) armorLight.enabled = ArmorOn;
 
             // animation
             if (anim == null) return;
             if (hp.Dead) { anim.speed = 0.5f; Play("Idle", 0.3f); return; }
             float hs = new Vector3(vel.x, 0, vel.z).magnitude;
-            if (leaping || rolling || charging || Time.time < lockUntil) { }
+            if (leaping || rolling || charging || plunging || Time.time < lockUntil) { }
             else if (airTime > 0.2f) { anim.speed = 1f; Play("Jump", 0.1f); }
             else if (hs > 0.4f)
             {
@@ -192,48 +263,105 @@ namespace Relict
             else { anim.speed = 1f; Play("Idle", 0.2f); }
         }
 
+        // ---------- dodge & slide ----------
+        void Dodge(Vector3 dir, bool slide)
+        {
+            dodgeMeter -= 1f;
+            dir.y = 0; dir.Normalize();
+            dashDir = dir;
+            sliding = slide;
+            charging = false;
+            rollUntil = Time.time + (slide ? 0.6f : 0.38f);
+            vel = dir * (slide ? 14f : 11.5f);
+            slideHit.Clear();
+            if (kind == HeroKind.Frog) { Restart("Roll"); anim.speed = slide ? 1.2f : 1.7f; }
+            else { Restart(slide ? "Run" : "Jump", 0.04f); anim.speed = slide ? 1.8f : 2.2f; }
+            SFX.Play(Sfx.Swoosh, 0.7f, 0.2f);
+            VFX.Burst(transform.position + Vector3.up * 0.15f, new Color(0.75f, 0.7f, 0.55f), slide ? 18 : 10, 2.5f, 0.18f, 0.5f, 0.3f);
+        }
+
+        void SlideHits()
+        {
+            var mm = MatchManager.I;
+            float dmg = damage * 0.6f * mm.DamageMul;
+            var cols = Physics.OverlapSphere(transform.position + Vector3.up * 0.6f + dashDir * 0.6f, 1.3f, ~0, QueryTriggerInteraction.Ignore);
+            foreach (var c in cols)
+            {
+                var h = c.GetComponentInParent<Health>();
+                if (h == null || h == hp || h.Dead || h.team == Team.Player || slideHit.Contains(h)) continue;
+                slideHit.Add(h);
+                bool crit = RollCrit();
+                h.Damage(dmg * (crit ? critMultiplier : 1f), hp, crit);
+                var kbk = h.GetComponent<IKnockback>();
+                if (kbk != null) kbk.Knock((dashDir + Vector3.up * 0.2f) * 8f);
+                SFX.Play(Sfx.MeleeHit, 0.8f, 0.1f);
+                MatchManager.I.HitMarker(crit, h.Dead);
+                if (tpc) tpc.Shake(0.12f);
+            }
+        }
+
+        // ---------- melee (frog) ----------
         void Attack(Vector3 fwd)
         {
             var mm = MatchManager.I;
-            attackReady = Time.time + attackInterval / mm.AttackSpeedMul;
-            float dmg = damage * mm.DamageMul;
+            combo = Time.time - lastSwing < 0.9f ? (combo + 1) % 3 : 0;
+            lastSwing = Time.time;
+            bool finisher = combo == 2;
+            attackReady = Time.time + attackInterval / mm.AttackSpeedMul * (finisher ? 1.35f : 1f);
+            float dmg = damage * mm.DamageMul * (combo == 0 ? 1f : combo == 1 ? 1.15f : 1.6f);
             transform.rotation = Quaternion.LookRotation(fwd);
-            if (kind == HeroKind.Frog)
-            {
-                lockUntil = Time.time + 0.3f;
-                Restart("Attack");
-                anim.speed = 1.9f;
-                vel += fwd * 2.5f;
-                SFX.Play(Sfx.Swoosh, 0.6f, 0.15f);
-                StartCoroutine(MeleeHit(fwd, dmg));
-            }
-            else
-            {
-                lockUntil = Time.time + 0.22f;
-                Restart("Attack");
-                anim.speed = 2.5f;
-                Vector3 origin = transform.position + Vector3.up * 1.35f + fwd * 0.45f + transform.right * 0.15f;
-                Vector3 aim = AimPoint();
-                Projectile.Fire(origin, (aim - origin).normalized * 55f, dmg, hp, new Color(1f, 0.8f, 0.45f));
-            }
+            lockUntil = Time.time + (finisher ? 0.42f : 0.3f);
+            Restart(finisher ? "Ability" : "Attack");
+            anim.speed = finisher ? 2.2f : 1.9f;
+            vel += fwd * (finisher ? 5f : 2.5f);
+            SFX.Play(Sfx.Swoosh, finisher ? 0.9f : 0.6f, 0.15f);
+            StartCoroutine(MeleeHit(fwd, dmg, finisher));
         }
 
-        IEnumerator MeleeHit(Vector3 fwd, float dmg)
+        IEnumerator MeleeHit(Vector3 fwd, float dmg, bool finisher)
         {
-            yield return new WaitForSeconds(0.08f);
+            yield return new WaitForSeconds(finisher ? 0.14f : 0.08f);
             flip = !flip;
-            VFX.Slash(transform.position, fwd, new Color(0.55f, 1f, 0.75f), 1.5f, flip);
-            int n = Combat.Melee(transform.position, fwd, 2.3f, 160f, dmg, hp, 5f);
+            bool crit = finisher || RollCrit();
+            Color c = crit ? new Color(1f, 0.8f, 0.3f) : new Color(0.55f, 1f, 0.75f);
+            VFX.Slash(transform.position, fwd, c, finisher ? 2.0f : 1.5f, flip);
+            if (finisher) VFX.Slash(transform.position, fwd, c, 1.6f, !flip);
+            int n = Combat.Melee(transform.position, fwd, finisher ? 2.9f : 2.3f, finisher ? 230f : 160f, dmg * (crit ? critMultiplier : 1f), hp, finisher ? 10f : 5f, crit);
             if (n > 0)
             {
-                if (tpc) tpc.Shake(0.14f);
-                SFX.Play(Sfx.MeleeHit, 0.9f);
-                MatchManager.I.HitStop(0.05f);
-                MatchManager.I.HitMarker(false, false);
+                if (tpc) tpc.Shake(finisher ? 0.3f : 0.14f);
+                SFX.Play(crit ? Sfx.ArrowCrit : Sfx.MeleeHit, 0.9f);
+                MatchManager.I.HitStop(finisher ? 0.09f : crit ? 0.06f : 0.04f);
+                MatchManager.I.HitMarker(crit, false);
             }
         }
 
-        // Soft aim assist: snap to a hostile near the crosshair, or to one right in front of the hero.
+        void StartPlunge()
+        {
+            plunging = true;
+            plungeStart = Time.time;
+            yVel = -6f;
+            vel *= 0.4f;
+            Restart("Ability", 0.05f);
+            anim.speed = 1.6f;
+            SFX.Play(Sfx.Swoosh, 0.9f, 0.1f);
+        }
+
+        void LandPlunge()
+        {
+            plunging = false;
+            var mm = MatchManager.I;
+            bool crit = RollCrit(0.25f);
+            float dmg = damage * 1.5f * mm.DamageMul * (crit ? critMultiplier : 1f);
+            int n = Combat.Melee(transform.position, transform.forward, 3.2f, 360f, dmg, hp, 8f, crit);
+            SFX.Play(Sfx.Leap, 0.9f);
+            VFX.Ring(transform.position + Vector3.up * 0.15f, crit ? new Color(1f, 0.8f, 0.3f) : new Color(0.6f, 1f, 0.7f));
+            if (tpc) tpc.Shake(0.35f);
+            lockUntil = Time.time + 0.25f;
+            if (n > 0) { mm.HitStop(0.06f); mm.HitMarker(crit, false); }
+        }
+
+        // ---------- bow (gecko) ----------
         Vector3? AssistTarget()
         {
             Health best = null;
@@ -275,21 +403,22 @@ namespace Relict
             float k = Charge01;
             charging = false;
             bool heavy = k >= 0.999f;
-            float mul = Mathf.Lerp(0.65f, 1.6f, k);
-            float speed = Mathf.Lerp(42f, 78f, k);
-            float spread = (aimed ? 0.5f : 2.2f) * (1f - k);
+            bool crit = RollCrit(heavy ? 0.2f : 0f);
+            float mul = Mathf.Lerp(0.75f, 1.6f, k) * (crit ? critMultiplier : 1f);
+            float speed = Mathf.Lerp(46f, 80f, k);
+            float spread = (aimed ? 0.4f : 1.8f) * (1f - k);
             Vector3 origin = transform.position + Vector3.up * 1.35f + fwd * 0.45f + transform.right * 0.15f;
             Vector3 aim = AimPoint(!aimed);
             Vector3 dir = (aim - origin).normalized;
             dir = Quaternion.Euler(Random.Range(-spread, spread), Random.Range(-spread, spread), 0) * dir;
-            Projectile.Fire(origin, dir * speed, damage * mm.DamageMul * mul, hp, new Color(1f, 0.8f, 0.45f), heavy ? 1 : 0, heavy);
-            attackReady = Time.time + 0.2f / mm.AttackSpeedMul;
-            lockUntil = Time.time + 0.2f;
+            Projectile.Fire(origin, dir * speed, damage * mm.DamageMul * mul, hp, crit ? new Color(1f, 0.6f, 0.2f) : new Color(1f, 0.8f, 0.45f), heavy ? 1 : 0, heavy, crit);
+            attackReady = Time.time + 0.18f / mm.AttackSpeedMul;
+            lockUntil = Time.time + 0.18f;
             transform.rotation = Quaternion.LookRotation(fwd);
             anim.speed = 2.5f;
             SFX.Play(Sfx.BowRelease, heavy ? 1f : 0.75f, 0.05f);
             if (tpc) { tpc.Kick(heavy ? 2.4f : 1.1f); tpc.Shake(heavy ? 0.12f : 0.04f); }
-            VFX.Burst(origin + dir * 0.4f, new Color(1f, 0.9f, 0.6f), heavy ? 10 : 4, 2f, 0.06f, 0.2f, 0f);
+            VFX.Burst(origin + dir * 0.4f, crit ? new Color(1f, 0.7f, 0.3f) : new Color(1f, 0.9f, 0.6f), heavy || crit ? 10 : 4, 2f, 0.06f, 0.2f, 0f);
         }
 
         Vector3 AimPoint(bool useAssist = true)
@@ -308,6 +437,7 @@ namespace Relict
             return p;
         }
 
+        // ---------- abilities ----------
         void Ability(Vector3 fwd)
         {
             var mm = MatchManager.I;
@@ -335,23 +465,13 @@ namespace Relict
             leaping = false;
             vel *= 0.15f;
             var mm = MatchManager.I;
-            float dmg = damage * 2.2f * mm.DamageMul * mm.AbilityPowerMul;
-            int n = Combat.Melee(transform.position, transform.forward, 3.8f, 360f, dmg, hp, 9f);
+            bool crit = RollCrit(0.2f);
+            float dmg = damage * 2.2f * mm.DamageMul * mm.AbilityPowerMul * (crit ? critMultiplier : 1f);
+            int n = Combat.Melee(transform.position, transform.forward, 3.8f, 360f, dmg, hp, 9f, crit);
             SFX.Play(Sfx.Leap, 1f);
-            if (n > 0) { MatchManager.I.HitStop(0.07f); MatchManager.I.HitMarker(false, false); }
+            if (n > 0) { mm.HitStop(0.07f); mm.HitMarker(crit, false); }
             VFX.Ring(transform.position + Vector3.up * 0.15f, new Color(0.5f, 1f, 0.6f));
             if (tpc) tpc.Shake(0.5f);
-        }
-
-        void Roll(Vector3 dir)
-        {
-            rollReady = Time.time + 1.1f;
-            rollUntil = Time.time + 0.45f;
-            dir.y = 0; dir.Normalize();
-            vel = dir * 10f;
-            transform.rotation = Quaternion.LookRotation(dir);
-            Restart("Roll");
-            anim.speed = 1.6f;
         }
     }
 }

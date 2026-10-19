@@ -51,7 +51,7 @@ namespace Relict
                 case InsectKind.Ant:
                     {
                         cc.radius = 0.45f; cc.height = 0.9f; cc.center = new Vector3(0, 0.5f, 0);
-                        hp.Init(Team.Insect, 45f, "Муравей-солдат");
+                        hp.Init(Team.Insect, 34f, "Муравей-солдат");
                         ai.speed = 5.2f; ai.damage = 8f; ai.range = 1.5f; ai.cooldown = 1.1f; ai.gold = 8; ai.xp = 15; ai.aggro = 15f;
                         body.localPosition = new Vector3(0, 0.55f, 0);
                         var shell = Art.Lit(new Color(0.28f, 0.07f, 0.04f), 0.75f, 0.1f);
@@ -72,7 +72,7 @@ namespace Relict
                 case InsectKind.Beetle:
                     {
                         cc.radius = 0.8f; cc.height = 1.3f; cc.center = new Vector3(0, 0.7f, 0);
-                        hp.Init(Team.Insect, 170f, "Жук-броненосец");
+                        hp.Init(Team.Insect, 120f, "Жук-броненосец");
                         ai.speed = 3.2f; ai.damage = 18f; ai.range = 1.9f; ai.cooldown = 1.6f; ai.gold = 30; ai.xp = 40; ai.aggro = 13f;
                         body.localPosition = new Vector3(0, 0.7f, 0);
                         var shell = k == InsectKind.Colossus ? Art.Lit(new Color(0.35f, 0.12f, 0.05f), 0.9f, 0.8f, new Color(0.15f, 0.04f, 0f)) : Art.Lit(new Color(0.06f, 0.3f, 0.2f), 0.9f, 0.7f);
@@ -116,7 +116,7 @@ namespace Relict
             if (k == InsectKind.Colossus)
             {
                 go.transform.localScale = Vector3.one * 1.75f;
-                hp.Init(Team.Insect, 700f, "Жук-Колосс");
+                hp.Init(Team.Insect, 520f, "Жук-Колосс");
                 ai.mini = true;
                 ai.speed = 3.6f; ai.damage = 26f; ai.range = 2.2f; ai.cooldown = 2.2f; ai.gold = 120; ai.xp = 140; ai.aggro = 18f; ai.leash = 26f;
                 var l = new GameObject("ColossusGlow").AddComponent<Light>();
@@ -294,12 +294,27 @@ namespace Relict
             }
         }
 
+        // Red ground marker that fills up during the wind-up: dodge before it completes.
+        static void Telegraph(Vector3 pos, float radius, float time)
+        {
+            pos = LGeo.OnGround(pos) + Vector3.up * 0.06f;
+            var root = new GameObject("Telegraph");
+            root.transform.position = pos;
+            Art.Part(root.transform, PrimitiveType.Cylinder, Vector3.zero, new Vector3(radius * 2f, 0.01f, radius * 2f), Art.Additive(new Color(1f, 0.2f, 0.1f, 0.35f)));
+            var inner = Art.Part(root.transform, PrimitiveType.Cylinder, Vector3.up * 0.01f, new Vector3(0.1f, 0.012f, 0.1f), Art.Additive(new Color(1f, 0.35f, 0.15f, 0.55f)));
+            foreach (var r in root.GetComponentsInChildren<Renderer>()) r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            root.AddComponent<TelegraphFill>().Init(inner.transform, radius, time);
+        }
+
         IEnumerator Attack()
         {
             attacking = true;
             atkReady = Time.time + cooldown;
-            float wind = boss ? 0.45f : mini ? 0.6f : 0.28f;
-            for (float t = 0; t < wind; t += Time.deltaTime) { lunge = -0.15f * (t / wind); yield return null; }
+            float wind = boss ? 0.55f : mini ? 0.7f : kind == InsectKind.Beetle ? 0.45f : 0.32f;
+            if (mini || boss) Telegraph(transform.position, mini ? range + 1.6f : range + 0.5f, wind);
+            else if (kind == InsectKind.Beetle) Telegraph(transform.position + transform.forward * range * 0.6f, range * 0.75f, wind);
+            for (float t = 0; t < wind; t += Time.deltaTime) { lunge = -0.15f * (t / wind); body.localScale = Vector3.one * (1f + 0.1f * (t / wind)); yield return null; }
+            body.localScale = Vector3.one;
             for (float t = 0; t < 0.1f; t += Time.deltaTime) { lunge = Mathf.Lerp(-0.15f, 0.45f, t / 0.1f); yield return null; }
             if (!dying)
             {
@@ -329,6 +344,19 @@ namespace Relict
             for (float t = 0; t < 0.25f; t += Time.deltaTime) { lunge = Mathf.Lerp(0.45f, 0f, t / 0.25f); yield return null; }
             lunge = 0f;
             attacking = false;
+        }
+    }
+
+    public class TelegraphFill : MonoBehaviour
+    {
+        Transform inner; float radius, time, t;
+        public void Init(Transform i, float r, float duration) { inner = i; radius = r; time = Mathf.Max(0.05f, duration); }
+        void Update()
+        {
+            t += Time.deltaTime;
+            float k = Mathf.Clamp01(t / time);
+            if (inner) inner.localScale = new Vector3(radius * 2f * k, 0.012f, radius * 2f * k);
+            if (t > time + 0.1f) Destroy(gameObject);
         }
     }
 }

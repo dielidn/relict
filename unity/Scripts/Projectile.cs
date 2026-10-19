@@ -11,10 +11,11 @@ namespace Relict
         Vector3 vel;
         float dmg, life = 4f, grav = 3f;
         int pierce;
+        bool forceCrit;
         Health owner;
         readonly HashSet<Health> hitAlready = new HashSet<Health>();
 
-        public static void Fire(Vector3 pos, Vector3 velocity, float damage, Health owner, Color trail, int pierce = 0, bool heavy = false)
+        public static void Fire(Vector3 pos, Vector3 velocity, float damage, Health owner, Color trail, int pierce = 0, bool heavy = false, bool crit = false)
         {
             var go = new GameObject("Arrow");
             go.transform.position = pos;
@@ -27,7 +28,7 @@ namespace Relict
             tr.sharedMaterial = Art.Additive(heavy ? new Color(0.6f, 1f, 0.9f) : trail);
             tr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             var p = go.AddComponent<Projectile>();
-            p.vel = velocity; p.dmg = damage; p.owner = owner; p.pierce = pierce;
+            p.vel = velocity; p.dmg = damage; p.owner = owner; p.pierce = pierce; p.forceCrit = crit;
             p.grav = heavy ? 1.2f : 3f;
         }
 
@@ -72,8 +73,9 @@ namespace Relict
                     // weak spot: upper part of the body
                     var b = h.collider.bounds;
                     float rel = b.size.y > 0.01f ? (h.point.y - b.min.y) / b.size.y : 0f;
-                    bool crit = rel > 0.62f;
-                    float d = dmg * (crit ? 1.75f : 1f);
+                    bool head = rel > 0.62f;
+                    bool crit = head || forceCrit;
+                    float d = dmg * (head ? 1.5f : 1f);
                     hp.Damage(d, owner, crit);
                     bool killed = hp.Dead;
                     var kb = hp.GetComponent<IKnockback>();

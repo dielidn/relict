@@ -68,6 +68,7 @@ namespace Relict
         public float SpeedMul => 1f + 0.07f * ranks[2] + 0.06f * gear[3];
         public float AttackSpeedMul => (1f + 0.1f * ranks[2]) * (1f + 0.12f * gear[1]);
         public bool UIOpen => upgradeOpen || settingsOpen;
+        public float CritChance => 0.15f + 0.05f * ranks[2];
 
         // in-match gear bought with gold found in this run
         static readonly string[] GearNames = { "Заточка оружия", "Лёгкая рука", "Толстая шкура", "Быстрые лапы", "Целебный настой" };
@@ -77,7 +78,7 @@ namespace Relict
         public float AbilityPowerMul => 1f + 0.25f * ranks[3];
 
         static readonly string[] SkillNames = { "Сила", "Живучесть", "Ловкость", "Инстинкт" };
-        static readonly string[] SkillDesc = { "+15% урона", "+30 к здоровью", "+7% скорости, +10% темпа атаки", "−15% перезарядки, +25% силы способности" };
+        static readonly string[] SkillDesc = { "+15% урона", "+30 к здоровью", "+7% скорости, +10% темпа, +5% крита", "−15% перезарядки, +25% силы способности" };
         static readonly string[] ArtifactNames = { "Янтарный глаз", "Коготь предка", "Семя лианы", "Панцирь древних", "Слеза кристалла", "Перо первоящера" };
         static readonly string[] WeaponNames = { "I", "II", "III" };
 
@@ -148,6 +149,24 @@ namespace Relict
         {
             if (!stopping && state == State.Playing) StartCoroutine(HitStopCo(seconds));
         }
+
+        public void SlowMo(float seconds, float scale)
+        {
+            if (!stopping && state == State.Playing) StartCoroutine(SlowMoCo(seconds, scale));
+        }
+
+        IEnumerator SlowMoCo(float seconds, float scale)
+        {
+            stopping = true;
+            Time.timeScale = scale;
+            yield return new WaitForSecondsRealtime(seconds);
+            if (state == State.Playing) Time.timeScale = 1f;
+            stopping = false;
+        }
+
+        string bannerTitle, bannerSub;
+        float bannerT = -9f;
+        public void Banner(string title, string sub) { bannerTitle = title; bannerSub = sub; bannerT = Time.unscaledTime; }
 
         IEnumerator HitStopCo(float seconds)
         {
@@ -226,7 +245,7 @@ namespace Relict
             }
             // arena boss
             boss = EnemyAI.Create(InsectKind.Mantis, LGeo.OnGround(bossSpot.position) + Vector3.up * 0.3f, true);
-            boss.Hp.max = boss.Hp.hp = 1800f;
+            boss.Hp.max = boss.Hp.hp = 1500f;
             boss.aggro = 18f; boss.leash = LGeo.ArenaRadius - 4f;
             for (int i = 0; i < 4; i++)
             {

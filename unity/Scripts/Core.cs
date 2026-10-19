@@ -13,7 +13,7 @@ namespace Relict
         static readonly HashSet<Health> seen = new HashSet<Health>();
 
         // Hits everything hostile in a cone (arc in degrees, 360 = full circle) around origin.
-        public static int Melee(Vector3 origin, Vector3 fwd, float range, float arc, float dmg, Health attacker, float knock)
+        public static int Melee(Vector3 origin, Vector3 fwd, float range, float arc, float dmg, Health attacker, float knock, bool crit = false)
         {
             int n = Physics.OverlapSphereNonAlloc(origin + Vector3.up, range + 0.6f, buf, ~0, QueryTriggerInteraction.Ignore);
             seen.Clear();
@@ -31,7 +31,7 @@ namespace Relict
                 if (dist - rad > range) continue;
                 if (arc < 359f && dist > 0.3f && Vector3.Angle(fwd, d) > arc * 0.5f) continue;
                 seen.Add(h);
-                h.Damage(dmg, attacker);
+                h.Damage(dmg, attacker, crit);
                 count++;
                 if (knock > 0f)
                 {
