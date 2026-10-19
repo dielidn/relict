@@ -25,7 +25,7 @@ namespace Relict
         Vector3 knock, dashVel;
         bool dead;
 
-        public Health Hp => hp;
+        public Health Hp => hp != null ? hp : (hp = GetComponent<Health>());
         public bool IsDead => dead;
         public float Damage => baseDamage * (1f + 0.12f * (level - 1)) * (heart ? 1.3f : 1f);
 

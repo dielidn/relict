@@ -29,7 +29,7 @@ namespace Relict
         Vector3 knock, wander, chargeDir;
         bool dying, attacking;
 
-        public Health Hp => hp;
+        public Health Hp => hp != null ? hp : (hp = GetComponent<Health>());
         public bool Dying => dying;
 
         // ---------- construction ----------
