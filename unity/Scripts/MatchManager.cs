@@ -102,6 +102,9 @@ namespace Relict
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
             Time.timeScale = 1f;
+            GameSettings.Load();
+            GameSettings.Apply(false);
+            if (!GameSettings.HasNick) { nickPrompt = true; nickDraft = ""; }
             BuildExtraction();
         }
 
@@ -112,6 +115,7 @@ namespace Relict
             var prefab = kind == HeroKind.Frog ? frogPrefab : geckoPrefab;
             var go = Instantiate(prefab, playerSpawn.position, playerSpawn.rotation);
             Hero = go.GetComponent<HeroController>();
+            if (GameSettings.HasNick) Hero.Hp.displayName = GameSettings.Nick;
             Hero.Hp.Died += k => StartCoroutine(EndAfter(2.5f, false, "Вы пали в джунглях. Добыча потеряна."));
             Camera.main.GetComponent<ThirdPersonCamera>().SetTarget(go.transform);
             TimeLeft = matchLength;
@@ -217,6 +221,8 @@ namespace Relict
         void Update()
         {
             var kb = Keyboard.current;
+            if (kb != null && kb.f11Key.wasPressedThisFrame) GameSettings.ToggleFullscreen();
+            if (settingsOpen && kb != null && kb.escapeKey.wasPressedThisFrame) { CloseSettings(); return; }
             if (state == State.Playing || state == State.Paused)
             {
                 if (kb != null && kb.escapeKey.wasPressedThisFrame) SetPaused(state == State.Playing);
@@ -311,7 +317,7 @@ namespace Relict
             {
                 earned = gold + artValues.Sum();
                 Bank += earned;
-                AddToBoard("Вы (" + (chosen == HeroKind.Frog ? "Лягушка" : "Геккон") + ")", earned);
+                AddToBoard((GameSettings.HasNick ? GameSettings.Nick : "Игрок") + " (" + (chosen == HeroKind.Frog ? "лягушка" : "геккон") + ")", earned);
                 PlayerPrefs.Save();
             }
         }
@@ -426,7 +432,7 @@ namespace Relict
 
         public void DamageNumber(Vector3 pos, float amount, bool toPlayer)
         {
-            if (amount < 1.5f) return;
+            if (amount < 1.5f || !GameSettings.DamageNumbers) return;
             floaters.Add(new Floater
             {
                 pos = pos + Random.insideUnitSphere * 0.3f,
@@ -443,24 +449,69 @@ namespace Relict
         }
 
         // ---------- UI ----------
-        Texture2D white;
-        GUIStyle label, big, title, small, center, button, panel;
+        Texture2D white, btnN, btnH, btnA, fieldTex;
+        GUIStyle label, big, title, small, center, button, panel, field, slider, thumb, heading;
         float S => Screen.height / 1080f;
+
+        bool settingsOpen, nickPrompt;
+        string nickDraft = "";
+
+        static readonly Color Moss = new Color(0.06f, 0.09f, 0.05f, 0.86f);
+        static readonly Color Edge = new Color(0.55f, 0.8f, 0.35f, 0.55f);
+        static readonly Color Accent = new Color(0.72f, 1f, 0.45f);
+
+        static Texture2D Tex(Color c)
+        {
+            var t = new Texture2D(1, 1); t.SetPixel(0, 0, c); t.Apply(); t.hideFlags = HideFlags.DontSave; return t;
+        }
 
         void Styles()
         {
-            if (white == null) { white = new Texture2D(1, 1); white.SetPixel(0, 0, Color.white); white.Apply(); }
+            if (white == null)
+            {
+                white = Tex(Color.white);
+                btnN = Tex(new Color(0.16f, 0.27f, 0.12f, 0.95f));
+                btnH = Tex(new Color(0.26f, 0.42f, 0.18f, 0.98f));
+                btnA = Tex(new Color(0.38f, 0.58f, 0.22f, 1f));
+                fieldTex = Tex(new Color(0.02f, 0.03f, 0.02f, 0.9f));
+            }
             int fs(float f) => Mathf.RoundToInt(f * S);
             label = new GUIStyle(GUI.skin.label) { fontSize = fs(22), richText = true };
             label.normal.textColor = new Color(0.95f, 0.95f, 0.88f);
             small = new GUIStyle(label) { fontSize = fs(17) };
             big = new GUIStyle(label) { fontSize = fs(34), fontStyle = FontStyle.Bold };
+            heading = new GUIStyle(label) { fontSize = fs(30), fontStyle = FontStyle.Bold };
+            heading.normal.textColor = Accent;
             title = new GUIStyle(label) { fontSize = fs(72), fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
             title.normal.textColor = new Color(0.85f, 1f, 0.6f);
             center = new GUIStyle(label) { alignment = TextAnchor.MiddleCenter };
-            button = new GUIStyle(GUI.skin.button) { fontSize = fs(22), richText = true, wordWrap = true };
-            button.padding = new RectOffset(fs(10), fs(10), fs(8), fs(8));
+            button = new GUIStyle(GUI.skin.button) { fontSize = fs(21), richText = true, wordWrap = true, alignment = TextAnchor.MiddleCenter };
+            button.padding = new RectOffset(fs(10), fs(10), fs(6), fs(6));
+            button.border = new RectOffset(0, 0, 0, 0);
+            button.normal.background = btnN; button.hover.background = btnH; button.active.background = btnA; button.focused.background = btnN;
+            button.onNormal.background = btnA; button.onHover.background = btnA;
+            foreach (var st in new[] { button.normal, button.hover, button.active, button.focused, button.onNormal, button.onHover })
+                st.textColor = new Color(0.95f, 1f, 0.88f);
             panel = new GUIStyle(GUI.skin.box);
+            field = new GUIStyle(GUI.skin.textField) { fontSize = fs(24), alignment = TextAnchor.MiddleLeft };
+            field.padding = new RectOffset(fs(12), fs(12), fs(6), fs(6));
+            field.normal.background = fieldTex; field.focused.background = fieldTex; field.hover.background = fieldTex;
+            field.normal.textColor = field.focused.textColor = field.hover.textColor = Color.white;
+            slider = new GUIStyle(GUI.skin.horizontalSlider) { fixedHeight = fs(8) };
+            slider.normal.background = fieldTex;
+            slider.margin = new RectOffset(0, 0, fs(10), 0);
+            thumb = new GUIStyle(GUI.skin.horizontalSliderThumb) { fixedHeight = fs(24), fixedWidth = fs(16) };
+            thumb.normal.background = btnA; thumb.hover.background = Tex(Accent); thumb.active.background = Tex(Accent);
+        }
+
+        void Panel(Rect r)
+        {
+            Box(r, Moss);
+            float e = Mathf.Max(1f, 2f * S);
+            Box(new Rect(r.x, r.y, r.width, e), Edge);
+            Box(new Rect(r.x, r.yMax - e, r.width, e), Edge);
+            Box(new Rect(r.x, r.y, e, r.height), Edge);
+            Box(new Rect(r.xMax - e, r.y, e, r.height), Edge);
         }
 
         void Box(Rect r, Color c) { var o = GUI.color; GUI.color = c; GUI.DrawTexture(r, white); GUI.color = o; }
@@ -486,6 +537,8 @@ namespace Relict
         void OnGUI()
         {
             Styles();
+            bool modal = settingsOpen || nickPrompt;
+            GUI.enabled = !modal;
             switch (state)
             {
                 case State.Select: DrawSelect(); break;
@@ -493,6 +546,9 @@ namespace Relict
                 case State.Paused: DrawHud(); DrawPause(); break;
                 case State.Result: DrawResult(); break;
             }
+            GUI.enabled = true;
+            if (nickPrompt) DrawNickPrompt();
+            else if (settingsOpen) DrawSettings();
         }
 
         void DrawSelect()
@@ -508,24 +564,35 @@ namespace Relict
             DrawHeroCard(new Rect(Screen.width * 0.5f + 20 * s, y, w, h), HeroKind.Gecko,
                 "ГЕККОН-ЛУЧНИК", "Дальний бой, лук\nЗдоровье 130 · урон 20\n[ПКМ] Прицел\n[Q] Корковая броня −70% урона");
 
-            // bank + board
-            Box(new Rect(30 * s, 190 * s, 360 * s, 420 * s), new Color(0, 0, 0, 0.5f));
-            GUI.Label(new Rect(50 * s, 200 * s, 340 * s, 40 * s), "<b>Казна лагеря:</b> " + Bank + " зол.", label);
-            GUI.Label(new Rect(50 * s, 245 * s, 340 * s, 40 * s), "<b>Рейтинг вылазок</b>", label);
+            // player + bank + board
+            Panel(new Rect(30 * s, 40 * s, 380 * s, 120 * s));
+            GUI.Label(new Rect(50 * s, 50 * s, 340 * s, 30 * s), "Игрок", small);
+            GUI.Label(new Rect(50 * s, 76 * s, 240 * s, 40 * s), "<b>" + (GameSettings.HasNick ? GameSettings.Nick : "—") + "</b>", big);
+            if (GUI.Button(new Rect(280 * s, 82 * s, 115 * s, 36 * s), "Сменить", button)) { nickPrompt = true; nickDraft = GameSettings.Nick; }
+            GUI.Label(new Rect(50 * s, 122 * s, 340 * s, 30 * s), "Казна лагеря: <color=#ffd76a><b>" + Bank + "</b> зол.</color>", small);
+
+            Panel(new Rect(30 * s, 190 * s, 380 * s, 400 * s));
+            GUI.Label(new Rect(50 * s, 200 * s, 340 * s, 40 * s), "Рейтинг вылазок", heading);
             var b = Board();
             for (int i = 0; i < Mathf.Min(8, b.Count); i++)
-                GUI.Label(new Rect(50 * s, (285 + i * 36) * s, 340 * s, 36 * s), (i + 1) + ". " + b[i].Key + " — " + b[i].Value, small);
+            {
+                bool mine = GameSettings.HasNick && b[i].Key.StartsWith(GameSettings.Nick + " (");
+                string line = (i + 1) + ". " + b[i].Key + " — " + b[i].Value;
+                GUI.Label(new Rect(50 * s, (250 + i * 38) * s, 350 * s, 36 * s), mine ? "<color=#b8ff73><b>" + line + "</b></color>" : line, small);
+            }
 
-            Box(new Rect(Screen.width - 390 * s, 190 * s, 360 * s, 300 * s), new Color(0, 0, 0, 0.5f));
-            GUI.Label(new Rect(Screen.width - 370 * s, 200 * s, 340 * s, 290 * s),
-                "<b>Управление</b>\nWASD — движение\nShift — бег, Пробел — прыжок\nЛКМ — атака, Q — способность\n1–4 — навыки при повышении уровня\nEsc — пауза\n\n<b>Цель:</b> собрать артефакты и встать в круг лианы на 6 секунд, пока не закончилось время.", small);
+            if (GUI.Button(new Rect(Screen.width - 410 * s, 40 * s, 380 * s, 54 * s), "⚙  Настройки", button)) settingsOpen = true;
+            Panel(new Rect(Screen.width - 410 * s, 120 * s, 380 * s, 340 * s));
+            GUI.Label(new Rect(Screen.width - 390 * s, 130 * s, 340 * s, 40 * s), "Управление", heading);
+            GUI.Label(new Rect(Screen.width - 390 * s, 175 * s, 350 * s, 280 * s),
+                "WASD — движение\nShift — бег, Пробел — прыжок\nЛКМ — атака, Q — способность\nCtrl — перекат (лягушка)\n1–4 — навыки при повышении уровня\nEsc — пауза, F11 — полный экран\n\n<b>Цель:</b> собрать артефакты и простоять 6 с в круге лианы, пока не вышло время.", small);
         }
 
         void DrawHeroCard(Rect r, HeroKind k, string name, string desc)
         {
             float s = S;
-            Box(r, new Color(0.05f, 0.08f, 0.04f, 0.72f));
-            GUI.Label(new Rect(r.x + 20 * s, r.y + 15 * s, r.width, 45 * s), "<b>" + name + "</b>", big);
+            Panel(r);
+            GUI.Label(new Rect(r.x + 20 * s, r.y + 15 * s, r.width, 45 * s), name, heading);
             GUI.Label(new Rect(r.x + 20 * s, r.y + 65 * s, r.width - 40 * s, 140 * s), desc, small);
             int tier = WeaponTier(k);
             string wl = "Оружие: ранг " + WeaponNames[tier] + " (+" + (25 * tier) + "% урона)";
@@ -682,7 +749,8 @@ namespace Relict
             Shadow(new Rect(0, Screen.height * 0.3f, Screen.width, 90 * s), "Пауза", title);
             float w = 340 * s;
             if (GUI.Button(new Rect(Screen.width * 0.5f - w * 0.5f, Screen.height * 0.5f, w, 54 * s), "Продолжить", button)) SetPaused(false);
-            if (GUI.Button(new Rect(Screen.width * 0.5f - w * 0.5f, Screen.height * 0.5f + 70 * s, w, 54 * s), "Сдаться и в лагерь", button))
+            if (GUI.Button(new Rect(Screen.width * 0.5f - w * 0.5f, Screen.height * 0.5f + 70 * s, w, 54 * s), "Настройки", button)) settingsOpen = true;
+            if (GUI.Button(new Rect(Screen.width * 0.5f - w * 0.5f, Screen.height * 0.5f + 140 * s, w, 54 * s), "Сдаться и в лагерь", button))
             { Time.timeScale = 1f; End(false, "Вы покинули вылазку."); }
         }
 
@@ -694,7 +762,7 @@ namespace Relict
             Shadow(new Rect(0, 90 * s, Screen.width, 100 * s), victory ? "Эвакуация!" : "Поражение", title);
             Shadow(new Rect(0, 190 * s, Screen.width, 40 * s), resultLine, center);
             float w = 600 * s, x = Screen.width * 0.5f - w * 0.5f, y = 260 * s;
-            Box(new Rect(x, y, w, 420 * s), new Color(0.04f, 0.06f, 0.03f, 0.75f));
+            Panel(new Rect(x, y, w, 420 * s));
             string body =
                 "Золото: " + gold + "\n" +
                 "Артефакты: " + (artNames.Count == 0 ? "—" : string.Join(", ", artNames)) + " (" + artValues.Sum() + " зол.)\n" +
@@ -705,6 +773,146 @@ namespace Relict
             GUI.Label(new Rect(x + 24 * s, y + 18 * s, w - 48 * s, 400 * s), body, label);
             if (GUI.Button(new Rect(Screen.width * 0.5f - 170 * s, y + 440 * s, 340 * s, 56 * s), "<b>В лагерь</b>", button))
                 SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
+        }
+
+        // ---------- nickname ----------
+        void DrawNickPrompt()
+        {
+            float s = S;
+            Box(new Rect(0, 0, Screen.width, Screen.height), new Color(0, 0, 0, 0.6f));
+            float w = 640 * s, h = 300 * s;
+            var r = new Rect((Screen.width - w) * 0.5f, (Screen.height - h) * 0.5f, w, h);
+            Panel(r);
+            GUI.Label(new Rect(r.x + 30 * s, r.y + 24 * s, w - 60 * s, 44 * s), "Как вас звать в джунглях?", heading);
+            GUI.Label(new Rect(r.x + 30 * s, r.y + 72 * s, w - 60 * s, 30 * s), "Ник видно в рейтинге и над героем. От 2 до 16 символов.", small);
+            GUI.SetNextControlName("nick");
+            nickDraft = GUI.TextField(new Rect(r.x + 30 * s, r.y + 115 * s, w - 60 * s, 52 * s), nickDraft ?? "", 16, field);
+            if (GUI.GetNameOfFocusedControl() != "nick") GUI.FocusControl("nick");
+            string clean = GameSettings.CleanNick(nickDraft);
+            bool ok = clean.Length >= 2;
+            var e = Event.current;
+            bool enter = e.type == EventType.KeyDown && (e.keyCode == KeyCode.Return || e.keyCode == KeyCode.KeypadEnter);
+            bool canCancel = GameSettings.HasNick;
+            float bw = canCancel ? (w - 80 * s) * 0.5f : w - 60 * s;
+            GUI.enabled = ok;
+            if (GUI.Button(new Rect(r.x + 30 * s, r.y + h - 90 * s, bw, 56 * s), "<b>Готово</b>", button) || (enter && ok))
+            {
+                GameSettings.Nick = clean;
+                GameSettings.Save();
+                nickPrompt = false;
+                GUI.FocusControl(null);
+            }
+            GUI.enabled = true;
+            if (canCancel && GUI.Button(new Rect(r.x + 50 * s + bw, r.y + h - 90 * s, bw, 56 * s), "Отмена", button))
+            { nickPrompt = false; GUI.FocusControl(null); }
+        }
+
+        // ---------- settings ----------
+        void CloseSettings()
+        {
+            settingsOpen = false;
+            GameSettings.Apply(false);
+            GameSettings.Save();
+        }
+
+        bool Toggle(Rect r, bool v)
+        {
+            if (GUI.Button(r, v ? "<color=#b8ff73><b>Вкл</b></color>" : "Выкл", button)) v = !v;
+            return v;
+        }
+
+        int Stepper(Rect r, int index, int count, string text)
+        {
+            float bw = r.height * 1.2f;
+            if (GUI.Button(new Rect(r.x, r.y, bw, r.height), "‹", button)) index = (index - 1 + count) % count;
+            GUI.Label(new Rect(r.x + bw, r.y, r.width - bw * 2, r.height), text, center);
+            if (GUI.Button(new Rect(r.xMax - bw, r.y, bw, r.height), "›", button)) index = (index + 1) % count;
+            return index;
+        }
+
+        float Slider(Rect r, float v, float min, float max, string valueText)
+        {
+            float vw = 80 * S;
+            v = GUI.HorizontalSlider(new Rect(r.x, r.y + r.height * 0.3f, r.width - vw - 10 * S, r.height), v, min, max, slider, thumb);
+            GUI.Label(new Rect(r.xMax - vw, r.y, vw, r.height), valueText, center);
+            return v;
+        }
+
+        void DrawSettings()
+        {
+            float s = S;
+            Box(new Rect(0, 0, Screen.width, Screen.height), new Color(0, 0, 0, 0.6f));
+            float w = 820 * s, h = 790 * s;
+            var r = new Rect((Screen.width - w) * 0.5f, (Screen.height - h) * 0.5f, w, h);
+            Panel(r);
+            GUI.Label(new Rect(r.x + 36 * s, r.y + 22 * s, w, 46 * s), "Настройки", heading);
+
+            float lx = r.x + 36 * s, cx = r.x + w * 0.45f, cw = w * 0.55f - 36 * s, rh = 44 * s;
+            float y = r.y + 90 * s, step = 58 * s;
+            void Row(string name, string hint = null)
+            {
+                GUI.Label(new Rect(lx, y + 4 * s, cx - lx, rh), name, label);
+                if (hint != null) GUI.Label(new Rect(lx, y + 30 * s, cx - lx, rh), "<color=#9fb08f>" + hint + "</color>", new GUIStyle(small) { fontSize = Mathf.RoundToInt(13 * s) });
+            }
+
+            Row("Ник");
+            string nick = GUI.TextField(new Rect(cx, y, cw, rh), GameSettings.Nick ?? "", 16, field);
+            nick = GameSettings.CleanNick(nick);
+            if (nick.Length >= 1) GameSettings.Nick = nick;
+            y += step + 6 * s;
+
+            GUI.Label(new Rect(lx, y, w, 30 * s), "<b>Управление</b>", new GUIStyle(small) { normal = { textColor = Accent } });
+            y += 34 * s;
+            Row("Чувствительность мыши");
+            GameSettings.Sensitivity = Slider(new Rect(cx, y, cw, rh), GameSettings.Sensitivity, 0.03f, 0.3f, Mathf.RoundToInt(GameSettings.Sensitivity * 100f).ToString());
+            y += step;
+            Row("Инвертировать мышь по Y");
+            GameSettings.InvertY = Toggle(new Rect(cx, y, 140 * s, rh), GameSettings.InvertY);
+            y += step + 6 * s;
+
+            GUI.Label(new Rect(lx, y, w, 30 * s), "<b>Изображение</b>", new GUIStyle(small) { normal = { textColor = Accent } });
+            y += 34 * s;
+            Row("Поле зрения");
+            float fov = Slider(new Rect(cx, y, cw, rh), GameSettings.Fov, 50f, 90f, Mathf.RoundToInt(GameSettings.Fov) + "°");
+            if (!Mathf.Approximately(fov, GameSettings.Fov)) { GameSettings.Fov = fov; GameSettings.Apply(false); }
+            y += step;
+
+            Row("Качество графики");
+            var qn = QualitySettings.names;
+            int q = Mathf.Clamp(GameSettings.Quality, 0, qn.Length - 1);
+            int nq = Stepper(new Rect(cx, y, cw, rh), q, qn.Length, qn[q]);
+            if (nq != q) { GameSettings.Quality = nq; GameSettings.Apply(false); }
+            y += step;
+
+            Row("Полный экран", Application.isEditor ? "в редакторе не действует — см. Game view" : "F11 — быстро переключить");
+            bool fs = Toggle(new Rect(cx, y, 140 * s, rh), GameSettings.Fullscreen);
+            if (fs != GameSettings.Fullscreen) { GameSettings.Fullscreen = fs; if (!Application.isEditor) GameSettings.ApplyScreen(); }
+            y += step;
+
+            Row("Разрешение");
+            var rs = GameSettings.Resolutions();
+            int count = rs.Length + 1; // +1 = native
+            int idx = GameSettings.ResolutionIndex < 0 ? 0 : GameSettings.ResolutionIndex + 1;
+            int nidx = Stepper(new Rect(cx, y, cw, rh), idx, count, GameSettings.ResolutionLabel());
+            if (nidx != idx) { GameSettings.ResolutionIndex = nidx - 1; if (!Application.isEditor) GameSettings.ApplyScreen(); }
+            y += step;
+
+            Row("Вертикальная синхронизация");
+            bool vs = Toggle(new Rect(cx, y, 140 * s, rh), GameSettings.VSync);
+            if (vs != GameSettings.VSync) { GameSettings.VSync = vs; GameSettings.Apply(false); }
+            y += step;
+
+            Row("Цифры урона");
+            GameSettings.DamageNumbers = Toggle(new Rect(cx, y, 140 * s, rh), GameSettings.DamageNumbers);
+            y += step;
+
+            Row("Громкость", "звук появится в следующих версиях");
+            float vol = Slider(new Rect(cx, y, cw, rh), GameSettings.Volume, 0f, 1f, Mathf.RoundToInt(GameSettings.Volume * 100f) + "%");
+            if (!Mathf.Approximately(vol, GameSettings.Volume)) { GameSettings.Volume = vol; AudioListener.volume = vol; }
+
+            float by = r.yMax - 80 * s, bw2 = (w - 72 * s - 20 * s) * 0.5f;
+            if (GUI.Button(new Rect(r.x + 36 * s, by, bw2, 54 * s), "По умолчанию", button)) GameSettings.ResetToDefaults();
+            if (GUI.Button(new Rect(r.x + 56 * s + bw2, by, bw2, 54 * s), "<b>Готово</b>", button)) CloseSettings();
         }
     }
 

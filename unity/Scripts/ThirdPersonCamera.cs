@@ -40,8 +40,9 @@ namespace Relict
             if (Cursor.lockState == CursorLockMode.Locked && Mouse.current != null && Time.timeScale > 0f)
             {
                 Vector2 d = Mouse.current.delta.ReadValue();
-                yaw += d.x * sensitivity;
-                pitch = Mathf.Clamp(pitch - d.y * sensitivity, -35f, 70f);
+                float sens = GameSettings.Sensitivity;
+                yaw += d.x * sens;
+                pitch = Mathf.Clamp(pitch - d.y * sens * (GameSettings.InvertY ? -1f : 1f), -35f, 70f);
             }
 
             Quaternion rot = Quaternion.Euler(pitch, yaw, 0);
