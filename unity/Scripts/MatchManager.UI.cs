@@ -211,7 +211,7 @@ namespace Relict
             // logo
             Txt(new Rect(56 * s, 40 * s, 700 * s, 100 * s), "РЕЛИКТ", St('h', 96f), new Color(0.86f, 1f, 0.62f), true);
             RR(new Rect(60 * s, 146 * s, 64 * s, 4 * s), CAccent, 2 * s);
-            Caption(new Rect(136 * s, 136 * s, 600 * s, 24 * s), "Джунгли · PvPvE · прототип", new Color(0.8f, 0.86f, 0.76f));
+            Caption(new Rect(136 * s, 136 * s, 600 * s, 24 * s), "Дуэль на Л-карте · PvPvE · прототип", new Color(0.8f, 0.86f, 0.76f));
 
             // player chip (top right)
             float cw = 430 * s, cx = W - cw - 48 * s, cy = 44 * s;
@@ -398,12 +398,26 @@ namespace Relict
             var tp = new Rect(W * 0.5f - 90 * s, 22 * s, 180 * s, 58 * s);
             Card(tp, 29f);
             Txt(tp, Clock(TimeLeft), St('h', 32f, TextAnchor.MiddleCenter), TimeLeft < 60f ? CDanger : CText);
-            string st2 = ExtractOpen ? "Лиана открыта" : "Лиана через " + Clock(extractOpensAfter - (matchLength - TimeLeft));
-            var stR = new Rect(W * 0.5f - 130 * s, 88 * s, 260 * s, 30 * s);
-            RR(stR, ExtractOpen ? new Color(0.2f, 0.4f, 0.12f, 0.85f) : new Color(0, 0, 0, 0.5f), 15 * s);
-            RR(new Rect(stR.x + 14 * s, stR.y + 11 * s, 8 * s, 8 * s), ExtractOpen ? CAccent : CMuted, 4 * s);
-            Txt(new Rect(stR.x + 10 * s, stR.y, stR.width, stR.height), st2.ToUpperInvariant(), St('h', 13f, TextAnchor.MiddleCenter), ExtractOpen ? CAccent : new Color(0.85f, 0.88f, 0.82f));
-            if (extractProgress > 0f) Bar(new Rect(W * 0.5f - 180 * s, 128 * s, 360 * s, 18 * s), extractProgress / extractHold, CAccent, "ЭВАКУАЦИЯ");
+            string st2 = Poison ? "Ядовитый туман!" : GatesForced ? "Все барьеры пали" : "Барьеры падут через " + Clock(gatesFallAt - Elapsed);
+            Color stC = Poison ? CDanger : GatesForced ? CAccent : new Color(0.85f, 0.88f, 0.82f);
+            var stR = new Rect(W * 0.5f - 150 * s, 88 * s, 300 * s, 30 * s);
+            RR(stR, Poison ? new Color(0.4f, 0.08f, 0.06f, 0.85f) : new Color(0, 0, 0, 0.5f), 15 * s);
+            RR(new Rect(stR.x + 14 * s, stR.y + 11 * s, 8 * s, 8 * s), stC, 4 * s);
+            Txt(new Rect(stR.x + 10 * s, stR.y, stR.width, stR.height), st2.ToUpperInvariant(), St('h', 13f, TextAnchor.MiddleCenter), stC);
+
+            // objective
+            string obj;
+            int myZone = ZonesCleared(0);
+            if (myZone < 3)
+            {
+                zoneMobs[0, myZone].RemoveAll(e => e == null || e.Dying);
+                obj = "Зона " + (myZone + 1) + " из 3 · осталось врагов: " + zoneMobs[0, myZone].Count;
+            }
+            else if (Rival != null && !Rival.IsDead) obj = LGeo.Locate(Hero.transform.position, out _) == -1 ? "Арена: победите соперника" : "Идите на арену";
+            else obj = "Соперник повержен";
+            Txt(new Rect(W * 0.5f - 300 * s, 124 * s, 600 * s, 26 * s), obj, St('b', 17f, TextAnchor.MiddleCenter), CText, true);
+
+            DrawMinimap();
 
             // loot card (top right)
             float lw = 300 * s, lx = W - lw - 32 * s, ly = 22 * s;
@@ -444,7 +458,14 @@ namespace Relict
                 Bar(new Rect(bx, by + 34 * s, bw, 16 * s), boss.Hp.hp / boss.Hp.max, new Color(0.78f, 0.32f, 0.9f), null, 8f);
             }
 
-            if (ExtractOpen) Marker(extractionPoint.position + Vector3.up * 3f, "Лиана", CAccent);
+            if (ZonesCleared(0) >= 3 && LGeo.Locate(Hero.transform.position, out _) != -1) Marker(LGeo.OnGround(Vector3.zero) + Vector3.up * 3f, "Арена", CAccent);
+            else if (ZonesCleared(0) < 3 && LMap.I != null)
+            {
+                var g = LMap.I.GateOf(0, ZonesCleared(0));
+                if (g != null && (g.transform.position - Hero.transform.position).magnitude < 45f) Marker(g.transform.position + Vector3.up * 8f, "Барьер", new Color(0.6f, 1f, 0.6f));
+            }
+            if (Rival != null && !Rival.IsDead && (Rival.transform.position - Hero.transform.position).magnitude < 70f)
+                Marker(Rival.transform.position + Vector3.up * 2.6f, Rival.Hp.displayName, CDanger);
             DrawCrosshair();
 
             if (Cursor.lockState != CursorLockMode.Locked && state == State.Playing && !upgradeOpen)
@@ -453,6 +474,77 @@ namespace Relict
                 RR(hr, CShade, 20 * s);
                 Txt(hr, "Щёлкните, чтобы управлять камерой", St('b', 17f, TextAnchor.MiddleCenter), CText);
             }
+        }
+
+        // ---------- minimap ----------
+        Vector2 MiniPoint(Rect m, Vector3 w)
+        {
+            const float minX = -172f, maxZ = 44f, span = 216f;
+            return new Vector2(m.x + (w.x - minX) / span * m.width, m.y + (maxZ - w.z) / span * m.height);
+        }
+
+        void DrawMinimap()
+        {
+            float s = S;
+            var card = new Rect(28 * s, 22 * s, 250 * s, 318 * s);
+            Card(card, 16f);
+            var m = new Rect(card.x + 15 * s, card.y + 15 * s, 220 * s, 220 * s);
+            float k = m.width / 216f;
+            Color floor = new Color(0.32f, 0.42f, 0.22f, 0.9f);
+            for (int arm = 0; arm < 2; arm++)
+            {
+                for (float t = 30f; t < LGeo.ArmLength; t += 6f)
+                {
+                    var a = MiniPoint(m, LGeo.ArmPoint(arm, t));
+                    var b = MiniPoint(m, LGeo.ArmPoint(arm, Mathf.Min(t + 6.5f, LGeo.ArmLength)));
+                    Line(a, b, LGeo.HalfWidthAt(t) * 2f * k, floor);
+                }
+                for (int g = 0; g < 3; g++)
+                {
+                    float t = LGeo.GateDist[g];
+                    var c = LGeo.ArmPoint(arm, t);
+                    var rgt = LGeo.ArmRight(arm, t) * (LGeo.HalfWidthAt(t) + 2f);
+                    bool open = ZonesCleared(arm) > g;
+                    Line(MiniPoint(m, c - rgt), MiniPoint(m, c + rgt), 3f * s, open ? new Color(0.6f, 1f, 0.5f, 0.5f) : new Color(1f, 0.45f, 0.35f, 0.95f));
+                }
+            }
+            var ac = MiniPoint(m, Vector3.zero);
+            float ar = LGeo.ArenaRadius * k;
+            RR(new Rect(ac.x - ar, ac.y - ar, ar * 2f, ar * 2f), floor, ar);
+            RR(new Rect(ac.x - ar, ac.y - ar, ar * 2f, ar * 2f), new Color(0.8f, 0.5f, 1f, 0.5f), ar, 1.5f * s);
+            // labels
+            Txt(new Rect(MiniPoint(m, LGeo.ArmPoint(0, 150f)).x - 40 * s, MiniPoint(m, LGeo.ArmPoint(0, 150f)).y + 2 * s, 80 * s, 16 * s), "ВЫ", St('h', 10f, TextAnchor.MiddleCenter), CAccent);
+            Txt(new Rect(MiniPoint(m, LGeo.ArmPoint(1, 150f)).x - 6 * s, MiniPoint(m, LGeo.ArmPoint(1, 150f)).y - 26 * s, 80 * s, 16 * s), "СОПЕРНИК", St('h', 10f), CDanger);
+            // markers
+            if (boss != null && !boss.Hp.Dead)
+            {
+                var bp = MiniPoint(m, boss.transform.position);
+                RR(new Rect(bp.x - 5 * s, bp.y - 5 * s, 10 * s, 10 * s), new Color(0.85f, 0.45f, 1f), 5 * s);
+            }
+            if (Rival != null && !Rival.IsDead)
+            {
+                var rp = MiniPoint(m, Rival.transform.position);
+                RR(new Rect(rp.x - 6 * s, rp.y - 6 * s, 12 * s, 12 * s), CDanger, 6 * s);
+                RR(new Rect(rp.x - 6 * s, rp.y - 6 * s, 12 * s, 12 * s), Color.white, 6 * s, 1.5f * s);
+            }
+            if (Hero != null)
+            {
+                var hp = MiniPoint(m, Hero.transform.position);
+                var f = Camera.main.transform.forward; 
+                var dir = new Vector2(f.x, -f.z).normalized;
+                Line(hp, hp + dir * 14f * s, 3f * s, new Color(CAccent.r, CAccent.g, CAccent.b, 0.8f));
+                RR(new Rect(hp.x - 6 * s, hp.y - 6 * s, 12 * s, 12 * s), CAccent, 6 * s);
+                RR(new Rect(hp.x - 6 * s, hp.y - 6 * s, 12 * s, 12 * s), Color.white, 6 * s, 1.5f * s);
+            }
+            // progress
+            float py = m.yMax + 14 * s;
+            Caption(new Rect(card.x + 16 * s, py, 120 * s, 20 * s), "Вы", CAccent);
+            Pips(new Rect(card.x + 120 * s, py + 7 * s, 110 * s, 7 * s), ZonesCleared(0), 3, CAccent);
+            int rz = Rival != null ? ZonesCleared(1) : 3;
+            Caption(new Rect(card.x + 16 * s, py + 28 * s, 120 * s, 20 * s), Rival != null && Rival.IsDead ? "Соперник ✕" : "Соперник", CDanger);
+            Pips(new Rect(card.x + 120 * s, py + 35 * s, 110 * s, 7 * s), rz, 3, CDanger);
+            if (Rival != null && !Rival.IsDead)
+                Txt(new Rect(card.x + 16 * s, py + 52 * s, 220 * s, 18 * s), "ур. " + Rival.level + (Rival.heart ? " · Сердце Реликта" : ""), St('r', 13f), CMuted);
         }
 
         void AbilitySlot(Rect r, string key, string name, float left, float total, float glow, bool big = false)
@@ -682,7 +774,7 @@ namespace Relict
             if (victory)
             {
                 Coin(new Rect(er.x + 22 * s, er.y + 21 * s, 22 * s, 22 * s));
-                Txt(new Rect(er.x + 56 * s, er.y, 400 * s, er.height), "В казну лагеря", St('b', 19f), CText);
+                Txt(new Rect(er.x + 56 * s, er.y, 400 * s, er.height), "В казну лагеря <color=#9AA894>(вкл. 300 за победу)</color>", St('b', 19f), CText);
                 Txt(new Rect(er.xMax - 260 * s, er.y, 240 * s, er.height), "+" + earned, St('h', 32f, TextAnchor.MiddleRight), CGold);
             }
             else Txt(er, "Добыча потеряна", St('b', 19f, TextAnchor.MiddleCenter), CMuted);

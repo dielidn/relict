@@ -4,7 +4,7 @@ using UnityEngine;
 
 namespace Relict
 {
-    public enum InsectKind { Ant, Beetle, Mantis }
+    public enum InsectKind { Ant, Beetle, Mantis, Colossus }
 
     [RequireComponent(typeof(CharacterController))]
     public class EnemyAI : MonoBehaviour, IKnockback
@@ -12,7 +12,8 @@ namespace Relict
         public InsectKind kind;
         public float speed = 4f, damage = 8f, range = 1.4f, cooldown = 1.2f, aggro = 14f, leash = 30f;
         public int gold = 10, xp = 15;
-        public bool boss;
+        public bool boss, mini;
+        public int arm = -1, zone = -1;
         public Vector3 home;
         public string title;
 
@@ -45,7 +46,7 @@ namespace Relict
             body.SetParent(go.transform, false);
             ai.body = body;
 
-            switch (k)
+            switch (k == InsectKind.Colossus ? InsectKind.Beetle : k)
             {
                 case InsectKind.Ant:
                     {
@@ -74,7 +75,7 @@ namespace Relict
                         hp.Init(Team.Insect, 170f, "Жук-броненосец");
                         ai.speed = 3.2f; ai.damage = 18f; ai.range = 1.9f; ai.cooldown = 1.6f; ai.gold = 30; ai.xp = 40; ai.aggro = 13f;
                         body.localPosition = new Vector3(0, 0.7f, 0);
-                        var shell = Art.Lit(new Color(0.06f, 0.3f, 0.2f), 0.9f, 0.7f);
+                        var shell = k == InsectKind.Colossus ? Art.Lit(new Color(0.35f, 0.12f, 0.05f), 0.9f, 0.8f, new Color(0.15f, 0.04f, 0f)) : Art.Lit(new Color(0.06f, 0.3f, 0.2f), 0.9f, 0.7f);
                         var dark = Art.Lit(new Color(0.05f, 0.06f, 0.05f), 0.5f);
                         Art.Part(body, PrimitiveType.Sphere, new Vector3(0, 0.1f, -0.15f), new Vector3(1.25f, 0.8f, 1.55f), shell);
                         Art.Part(body, PrimitiveType.Sphere, new Vector3(0, -0.05f, 0.7f), new Vector3(0.6f, 0.45f, 0.45f), dark);
@@ -111,6 +112,16 @@ namespace Relict
                         l.transform.SetParent(body, false); l.transform.localPosition = new Vector3(0, 1.8f, 1f);
                         break;
                     }
+            }
+            if (k == InsectKind.Colossus)
+            {
+                go.transform.localScale = Vector3.one * 1.75f;
+                hp.Init(Team.Insect, 700f, "Жук-Колосс");
+                ai.mini = true;
+                ai.speed = 3.6f; ai.damage = 26f; ai.range = 2.2f; ai.cooldown = 2.2f; ai.gold = 120; ai.xp = 140; ai.aggro = 18f; ai.leash = 26f;
+                var l = new GameObject("ColossusGlow").AddComponent<Light>();
+                l.type = LightType.Point; l.color = new Color(1f, 0.5f, 0.2f); l.intensity = 1.5f; l.range = 5f;
+                l.transform.SetParent(body, false); l.transform.localPosition = new Vector3(0, 1f, 0.8f);
             }
             ai.bodyBase = body.localPosition;
             ai.title = hp.displayName;
@@ -176,7 +187,7 @@ namespace Relict
             body.localScale = Vector3.one;
         }
 
-        public void Knock(Vector3 v) { knock += v * (boss ? 0.15f : kind == InsectKind.Beetle ? 0.5f : 1f); }
+        public void Knock(Vector3 v) { knock += v * (boss ? 0.15f : mini ? 0.2f : kind == InsectKind.Beetle ? 0.5f : 1f); }
 
         Health FindTarget()
         {
@@ -287,12 +298,18 @@ namespace Relict
         {
             attacking = true;
             atkReady = Time.time + cooldown;
-            float wind = boss ? 0.45f : 0.28f;
+            float wind = boss ? 0.45f : mini ? 0.6f : 0.28f;
             for (float t = 0; t < wind; t += Time.deltaTime) { lunge = -0.15f * (t / wind); yield return null; }
             for (float t = 0; t < 0.1f; t += Time.deltaTime) { lunge = Mathf.Lerp(-0.15f, 0.45f, t / 0.1f); yield return null; }
             if (!dying)
             {
-                if (boss)
+                if (mini)
+                {
+                    VFX.Ring(transform.position + Vector3.up * 0.1f, new Color(1f, 0.6f, 0.3f));
+                    SFX.Play(Sfx.Leap, 0.8f, 0.05f, transform.position);
+                    Combat.Melee(transform.position, transform.forward, range + 1.6f, 360f, damage, hp, 9f);
+                }
+                else if (boss)
                 {
                     VFX.Slash(transform.position + transform.forward * 0.6f, transform.forward, new Color(1f, 0.9f, 0.4f), 2.6f);
                     Combat.Melee(transform.position, transform.forward, range + 0.5f, 140f, damage, hp, 10f);

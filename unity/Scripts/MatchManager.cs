@@ -14,32 +14,36 @@ namespace Relict
         [Header("Prefabs")]
         public GameObject frogPrefab;
         public GameObject geckoPrefab;
-        public GameObject rivalModel;
+        public GameObject rivalModel;                       // gecko archer model
         public RuntimeAnimatorController rivalController;
+        public GameObject rivalFrogModel;                   // frog swordsman model
+        public RuntimeAnimatorController rivalFrogController;
         public GameObject[] artifactModels;
         public GameObject[] vineModels;
 
         [Header("Places")]
         public Transform playerSpawn;
-        public Transform extractionPoint;
+        public Transform extractionPoint;   // arena centre
         public Transform bossSpot;
         public Transform rivalSpawn;
         public GameObject selectDisplay;
 
         [Header("Rules")]
-        public float matchLength = 420f;
-        public float extractOpensAfter = 120f;
-        public float extractHold = 6f;
-        public float extractRadius = 3.5f;
-        public float mapRadius = 46f;
+        public float matchLength = 720f;    // after this, poison fog in the arena
+        public float gatesFallAt = 480f;    // all barriers drop by themselves
 
         public enum State { Select, Playing, Paused, Result }
         public State state = State.Select;
         public bool Playing => state == State.Playing;
 
         public HeroController Hero { get; private set; }
+        public RivalAI Rival { get; private set; }
         public float TimeLeft { get; private set; }
-        public bool ExtractOpen { get; private set; }
+        public float Elapsed => matchLength - TimeLeft;
+        public bool GatesForced { get; private set; }
+        public bool Poison => TimeLeft <= 0f;
+        public int ZonesCleared(int arm) => cleared[arm];
+        public EnemyAI Boss => boss;
 
         // run state
         HeroKind chosen = HeroKind.Frog;
@@ -47,22 +51,20 @@ namespace Relict
         readonly int[] ranks = new int[4];
         readonly int[] gear = new int[5];
         int goldSpent;
-        bool upgradeOpen;
-        float hitT = -9f, hurtT = -9f, lastCoinSfx;
+        bool upgradeOpen, heart;
+        float hitT = -9f, hurtT = -9f, lastCoinSfx, zoneCheck, poisonTick;
         bool hitCrit, hitKill;
         readonly List<string> artNames = new List<string>();
         readonly List<int> artValues = new List<int>();
-        float extractProgress, nextWave;
         bool victory;
         string resultLine = "";
         int earned;
         EnemyAI boss;
-        Light extractLight;
-        Renderer extractBeam;
-        readonly List<RivalAI> rivals = new List<RivalAI>();
+        readonly int[] cleared = new int[2];
+        readonly List<EnemyAI>[,] zoneMobs = new List<EnemyAI>[2, 3];
 
         // multipliers used by the hero
-        public float DamageMul => (1f + 0.15f * ranks[0]) * (1f + 0.25f * WeaponTier(chosen)) * (1f + 0.12f * gear[0]);
+        public float DamageMul => (1f + 0.15f * ranks[0]) * (1f + 0.25f * WeaponTier(chosen)) * (1f + 0.12f * gear[0]) * (heart ? 1.3f : 1f);
         public float SpeedMul => 1f + 0.07f * ranks[2] + 0.06f * gear[3];
         public float AttackSpeedMul => (1f + 0.1f * ranks[2]) * (1f + 0.12f * gear[1]);
         public bool UIOpen => upgradeOpen || settingsOpen;
@@ -118,7 +120,6 @@ namespace Relict
             Projectile.OnHit = OnProjectileHit;
             GameSettings.Apply(false);
             if (!GameSettings.HasNick) { nickPrompt = true; nickDraft = ""; }
-            BuildExtraction();
         }
 
         void OnDestroy()
@@ -162,18 +163,18 @@ namespace Relict
             chosen = kind;
             if (selectDisplay) selectDisplay.SetActive(false);
             var prefab = kind == HeroKind.Frog ? frogPrefab : geckoPrefab;
-            var go = Instantiate(prefab, playerSpawn.position, playerSpawn.rotation);
+            var go = Instantiate(prefab, playerSpawn.position + Vector3.up * 0.2f, playerSpawn.rotation);
             Hero = go.GetComponent<HeroController>();
             if (GameSettings.HasNick) Hero.Hp.displayName = GameSettings.Nick;
             Hero.Hp.Damaged += (a, amt) => { if (amt >= 2f) hurtT = Time.unscaledTime; };
-            Hero.Hp.Died += k => StartCoroutine(EndAfter(2.5f, false, "Вы пали в джунглях. Добыча потеряна."));
+            Hero.Hp.Died += k => StartCoroutine(EndAfter(2.5f, false, k != null && k.team == Team.Rival ? "Соперник оказался сильнее." : "Вы пали в джунглях."));
             Camera.main.GetComponent<ThirdPersonCamera>().SetTarget(go.transform);
             TimeLeft = matchLength;
-            nextWave = 45f;
             state = State.Playing;
             LockCursor(true);
             SpawnWorld();
-            Toast("Найдите артефакты и доберитесь до лианы эвакуации");
+            Toast("Зачищайте зоны — барьеры лиан откроют путь к арене");
+            Toast("Соперник идёт к арене с другой стороны");
         }
 
         void LockCursor(bool on)
@@ -182,90 +183,66 @@ namespace Relict
             Cursor.visible = !on;
         }
 
-        Vector3 FreePoint(float minR, float maxR, Vector3 avoid, float avoidDist)
+        // Point inside an arm zone, offset sideways from the centreline.
+        static Vector3 ZonePoint(int arm, float dist, float lateral)
         {
-            for (int i = 0; i < 40; i++)
-            {
-                var r = Random.insideUnitCircle.normalized * Random.Range(minR, maxR);
-                var p = new Vector3(r.x, 0, r.y);
-                if ((p - avoid).magnitude < avoidDist) continue;
-                if ((p - extractionPoint.position).magnitude < 6f) continue;
-                if (Physics.CheckSphere(p + Vector3.up * 1.1f, 0.9f, ~0, QueryTriggerInteraction.Ignore)) continue;
-                return p;
-            }
-            return new Vector3(Random.Range(-20f, 20f), 0, Random.Range(-20f, 20f));
+            var c = LGeo.ArmPoint(arm, dist) + LGeo.ArmRight(arm, dist) * lateral;
+            return LGeo.OnGround(c);
+        }
+
+        EnemyAI Mob(InsectKind k, int arm, int zone, Vector3 pos)
+        {
+            var e = EnemyAI.Create(k, LGeo.OnGround(pos) + Vector3.up * 0.3f);
+            e.arm = arm; e.zone = zone;
+            if (arm >= 0) zoneMobs[arm, zone].Add(e);
+            return e;
+        }
+
+        void Pack(int arm, int zone, Vector3 at, int count)
+        {
+            for (int i = 0; i < count; i++) Mob(InsectKind.Ant, arm, zone, at + Random.insideUnitSphere.Flat() * 2.5f);
         }
 
         void SpawnWorld()
         {
-            Vector3 sp = playerSpawn.position;
-            // artifacts, each guarded
-            var names = ArtifactNames.OrderBy(_ => Random.value).Take(5).ToList();
-            var placed = new List<Vector3>();
-            foreach (var n in names)
+            for (int a = 0; a < 2; a++) for (int z = 0; z < 3; z++) zoneMobs[a, z] = new List<EnemyAI>();
+            var arts = ArtifactNames.OrderBy(_ => Random.value).ToList();
+            for (int arm = 0; arm < 2; arm++)
             {
-                Vector3 p = sp;
-                for (int k = 0; k < 20; k++)
-                {
-                    p = FreePoint(14f, mapRadius - 4f, sp, 16f);
-                    if (placed.All(q => (q - p).magnitude > 14f)) break;
-                }
-                placed.Add(p);
-                Pickup.Artifact(p, n, Random.Range(120, 320), RandomModel(artifactModels));
-                if (Random.value < 0.5f) EnemyAI.Create(InsectKind.Beetle, p + new Vector3(2.5f, 0, 1.5f));
-                else for (int a = 0; a < 3; a++) EnemyAI.Create(InsectKind.Ant, p + Random.insideUnitSphere.Flat() * 3f + Vector3.right * 2f);
+                // zone 1: ant packs
+                Pack(arm, 0, ZonePoint(arm, 136f, Random.Range(-4f, 4f)), 3);
+                Pack(arm, 0, ZonePoint(arm, 122f, Random.Range(-5f, 5f)), 4);
+                Pickup.Heal(ZonePoint(arm, 128f, 7f), 40);
+                // zone 2: beetles with escorts, an artifact in the clearing
+                Pack(arm, 1, ZonePoint(arm, 106f, Random.Range(-4f, 4f)), 3);
+                Mob(InsectKind.Beetle, arm, 1, ZonePoint(arm, 95f, -4f));
+                Mob(InsectKind.Beetle, arm, 1, ZonePoint(arm, 86f, 4f));
+                Pickup.Artifact(ZonePoint(arm, 92f, 9f), arts[arm * 2], Random.Range(140, 260), RandomModel(artifactModels));
+                Pickup.Heal(ZonePoint(arm, 100f, -8f), 45);
+                // zone 3: the colossus and its guard
+                Mob(InsectKind.Colossus, arm, 2, ZonePoint(arm, 54f, 0f));
+                Pack(arm, 2, ZonePoint(arm, 64f, Random.Range(-4f, 4f)), 3);
+                Pickup.Heal(ZonePoint(arm, 70f, 8f), 50);
             }
-            // roaming packs
+            // arena boss
+            boss = EnemyAI.Create(InsectKind.Mantis, LGeo.OnGround(bossSpot.position) + Vector3.up * 0.3f, true);
+            boss.Hp.max = boss.Hp.hp = 1800f;
+            boss.aggro = 18f; boss.leash = LGeo.ArenaRadius - 4f;
             for (int i = 0; i < 4; i++)
             {
-                var p = FreePoint(15f, mapRadius - 3f, sp, 18f);
-                for (int a = 0; a < 3; a++) EnemyAI.Create(InsectKind.Ant, p + Random.insideUnitSphere.Flat() * 2.5f);
+                float a = i * Mathf.PI * 0.5f + 0.4f;
+                Pickup.Heal(LGeo.OnGround(new Vector3(Mathf.Cos(a), 0, Mathf.Sin(a)) * 22f), 50);
             }
-            for (int i = 0; i < 3; i++) EnemyAI.Create(InsectKind.Beetle, FreePoint(18f, mapRadius - 3f, sp, 20f));
-            // boss guarding the heart
-            boss = EnemyAI.Create(InsectKind.Mantis, bossSpot.position, true);
-            Pickup.Artifact(bossSpot.position + bossSpot.forward * 3f, "Сердце Реликта", 600, RandomModel(artifactModels));
-            // heal spores
-            for (int i = 0; i < 7; i++) Pickup.Heal(FreePoint(8f, mapRadius - 4f, sp, 6f), 45);
-            // rival squad
-            for (int i = 0; i < 2; i++)
-            {
-                var rp = rivalSpawn.position + new Vector3(i * 2f, 0, i * 1.5f);
-                var r = RivalAI.Create(rivalModel, rivalController, rp, i == 0 ? "Варан Скар" : "Ящерица Ксаль");
-                rivals.Add(r);
-            }
+
+            // rival champion: the other hero type
+            bool rivalMelee = chosen == HeroKind.Gecko;
+            var model = rivalMelee ? rivalFrogModel : rivalModel;
+            var ctrl = rivalMelee ? rivalFrogController : rivalController;
+            if (model == null) { model = rivalModel; ctrl = rivalController; rivalMelee = false; }
+            Rival = RivalAI.Create(model, ctrl, rivalSpawn.position + Vector3.up * 0.2f, rivalSpawn.rotation, rivalMelee ? "Жаба-Гром" : "Варан Скар", rivalMelee);
         }
 
         static GameObject RandomModel(GameObject[] arr) => arr != null && arr.Length > 0 ? arr[Random.Range(0, arr.Length)] : null;
-
-        void BuildExtraction()
-        {
-            var root = extractionPoint;
-            var beam = Art.Part(root, PrimitiveType.Cylinder, Vector3.up * 15f, new Vector3(1.2f, 15f, 1.2f), Art.Additive(new Color(0.4f, 1f, 0.5f, 0.12f)));
-            beam.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            extractBeam = beam.GetComponent<Renderer>();
-            beam.SetActive(false);
-            for (int i = 0; i < 12; i++)
-            {
-                float a = i / 12f * Mathf.PI * 2f;
-                var s = Art.Part(root, PrimitiveType.Sphere, new Vector3(Mathf.Cos(a), 0.15f, Mathf.Sin(a)) * extractRadius, Vector3.one * 0.25f,
-                    Art.Lit(new Color(0.3f, 0.9f, 0.4f), 0.5f, 0f, new Color(0.3f, 1.2f, 0.4f)));
-                s.transform.localPosition = new Vector3(Mathf.Cos(a) * extractRadius, 0.15f, Mathf.Sin(a) * extractRadius);
-            }
-            if (vineModels != null)
-                for (int i = 0; i < 5; i++)
-                {
-                    var vm = RandomModel(vineModels);
-                    if (vm == null) break;
-                    var v = Instantiate(vm, root);
-                    v.transform.localPosition = new Vector3(Random.Range(-1.2f, 1.2f), 2.5f + i * 1.6f, Random.Range(-1.2f, 1.2f));
-                    v.transform.localScale = v.transform.localScale * 1.8f;
-                }
-            extractLight = new GameObject("ExtractLight").AddComponent<Light>();
-            extractLight.type = LightType.Point; extractLight.range = 12f; extractLight.intensity = 1f; extractLight.color = new Color(1f, 0.4f, 0.3f);
-            extractLight.transform.SetParent(root, false);
-            extractLight.transform.localPosition = Vector3.up * 3f;
-        }
 
         // ---------- update ----------
         void Update()
@@ -285,59 +262,59 @@ namespace Relict
             float dt = Time.deltaTime;
             TimeLeft -= dt;
 
-            if (!ExtractOpen && matchLength - TimeLeft >= extractOpensAfter)
-            {
-                ExtractOpen = true;
-                extractBeam.gameObject.SetActive(true);
-                extractLight.color = new Color(0.4f, 1f, 0.5f);
-                extractLight.intensity = 6f;
-                Toast("Лиана эвакуации раскрылась! Рой просыпается…");
-            }
-            if (extractLight) extractLight.intensity = ExtractOpen ? 5f + Mathf.Sin(Time.time * 3f) * 1.5f : 1f;
-
-            // skills
             if (skillPoints > 0 && kb != null)
-            {
                 for (int i = 0; i < 4; i++)
                 {
                     var key = i == 0 ? kb.digit1Key : i == 1 ? kb.digit2Key : i == 2 ? kb.digit3Key : kb.digit4Key;
                     if (key.wasPressedThisFrame) BuySkill(i);
                 }
-            }
 
-            // extraction
-            if (ExtractOpen && Hero != null && !Hero.Hp.Dead)
+            // zone clearing opens the next gate
+            zoneCheck -= dt;
+            if (zoneCheck <= 0f)
             {
-                Vector3 d = Hero.transform.position - extractionPoint.position; d.y = 0;
-                if (d.magnitude < extractRadius)
+                zoneCheck = 0.4f;
+                for (int arm = 0; arm < 2; arm++)
                 {
-                    extractProgress += dt;
-                    if (extractProgress >= extractHold) { End(true, "Вы ушли по лиане с добычей!"); return; }
+                    int z = cleared[arm];
+                    if (z >= 3) continue;
+                    var list = zoneMobs[arm, z];
+                    list.RemoveAll(e => e == null || e.Dying);
+                    if (list.Count == 0) OpenGate(arm, z, false);
                 }
-                else extractProgress = Mathf.Max(0f, extractProgress - dt * 2f);
-            }
-
-            // insect director
-            nextWave -= dt;
-            if (nextWave <= 0f)
-            {
-                nextWave = ExtractOpen ? 25f : 40f;
-                int alive = FindObjectsByType<EnemyAI>(FindObjectsInactive.Exclude).Count(e => !e.Dying);
-                if (alive < 26 && Hero != null)
+                if (!GatesForced && Elapsed >= gatesFallAt)
                 {
-                    Vector3 hp = Hero.transform.position;
-                    Vector3 p = FreePoint(mapRadius * 0.6f, mapRadius - 2f, hp, 20f);
-                    int n = ExtractOpen ? 5 : 3;
-                    for (int a = 0; a < n; a++)
-                    {
-                        var e = EnemyAI.Create(InsectKind.Ant, p + Random.insideUnitSphere.Flat() * 2.5f);
-                        e.aggro = 38f; // hunting wave
-                    }
-                    if (ExtractOpen) EnemyAI.Create(InsectKind.Beetle, p + Vector3.right * 3f).aggro = 38f;
+                    GatesForced = true;
+                    for (int arm = 0; arm < 2; arm++) while (cleared[arm] < 3) OpenGate(arm, cleared[arm], true);
+                    Toast("Джунгли расступились: все барьеры пали!");
                 }
             }
 
-            if (TimeLeft <= 0f) End(false, "Джунгли сомкнулись. Вы не успели к лиане.");
+            // poison fog after the timer
+            if (Poison)
+            {
+                poisonTick -= dt;
+                if (poisonTick <= 0f)
+                {
+                    poisonTick = 1f;
+                    if (Hero && !Hero.Hp.Dead) Hero.Hp.Damage(Hero.Hp.max * 0.04f, null);
+                    if (Rival && !Rival.IsDead) Rival.Hp.Damage(Rival.Hp.max * 0.04f, null);
+                }
+            }
+        }
+
+        void OpenGate(int arm, int index, bool silent)
+        {
+            var gate = LMap.I ? LMap.I.GateOf(arm, index) : null;
+            if (gate) gate.Open();
+            cleared[arm] = Mathf.Max(cleared[arm], index + 1);
+            if (silent) return;
+            if (arm == 0)
+            {
+                Toast(index < 2 ? "Барьер пал — путь в зону " + (index + 2) + " открыт" : "Путь на арену открыт!");
+                SFX.Play(Sfx.LevelUp, 0.6f, 0f);
+            }
+            else Toast(index < 2 ? "Соперник прорвался в зону " + (index + 2) : "Соперник вышел к арене!");
         }
 
         void SetUpgrades(bool open)
@@ -395,7 +372,7 @@ namespace Relict
             earned = 0;
             if (win)
             {
-                earned = gold + artValues.Sum();
+                earned = gold + artValues.Sum() + 300;
                 Bank += earned;
                 AddToBoard((GameSettings.HasNick ? GameSettings.Nick : "Игрок") + " (" + (chosen == HeroKind.Frog ? "лягушка" : "геккон") + ")", earned);
                 PlayerPrefs.Save();
@@ -408,25 +385,46 @@ namespace Relict
             int g = e.gold;
             int coins = Mathf.Clamp(g / 8, 1, 12);
             for (int i = 0; i < coins; i++) Pickup.Gold(e.transform.position, Mathf.Max(1, g / coins));
-            if (Random.value < (e.boss ? 1f : 0.12f)) Pickup.Heal(e.transform.position + Vector3.right, 35);
-            if (killer != null && Hero != null && killer == Hero.Hp)
+            if (Random.value < (e.boss || e.mini ? 1f : 0.12f)) Pickup.Heal(e.transform.position + Vector3.right, 40);
+            if (e.mini) Pickup.Artifact(e.transform.position + Vector3.forward * 1.5f, "Панцирь Колосса", 220, RandomModel(artifactModels));
+            bool byHero = killer != null && Hero != null && killer == Hero.Hp;
+            bool byRival = killer != null && Rival != null && killer == Rival.Hp;
+            if (byHero)
             {
                 kills++;
                 AddXp(e.xp);
                 HitMarker(false, true);
                 SFX.Play(Sfx.Kill, 0.7f, 0.03f);
             }
-            if (e.boss) Toast("Богомол-Страж повержен!");
+            if (byRival) Rival.AddXp(e.xp);
+            if (e.boss)
+            {
+                if (byHero)
+                {
+                    heart = true;
+                    Hero.Hp.SetMax(Hero.Hp.max + 60f); Hero.Hp.Heal(Hero.Hp.max);
+                    Toast("Сердце Реликта ваше: +30% урона, +60 здоровья!");
+                    SFX.Play(Sfx.Artifact, 1f, 0f);
+                }
+                else if (byRival)
+                {
+                    Rival.TakeHeart();
+                    Toast("Соперник забрал Сердце Реликта!");
+                }
+                else Toast("Богомол-Страж повержен");
+            }
+            else if (e.mini && e.arm == 0) Toast("Жук-Колосс повержен");
         }
 
         public void OnRivalKilled(RivalAI r, Health killer)
         {
             int coins = Mathf.Clamp(r.gold / 10, 2, 15);
-            for (int i = 0; i < coins; i++) Pickup.Gold(r.transform.position, Mathf.Max(5, (r.gold + 60) / coins));
+            for (int i = 0; i < coins; i++) Pickup.Gold(r.transform.position, Mathf.Max(5, (r.gold + 80) / coins));
             for (int i = 0; i < r.artifacts.Count; i++)
                 Pickup.Artifact(r.transform.position + Random.insideUnitSphere.Flat() * 1.5f, r.artifacts[i], r.artifactValues[i], RandomModel(artifactModels));
-            if (killer != null && Hero != null && killer == Hero.Hp) { kills++; AddXp(120); HitMarker(false, true); SFX.Play(Sfx.Kill, 0.9f, 0f); HitStop(0.08f); }
-            Toast(r.Hp.displayName + " выбит из матча");
+            if (killer != null && Hero != null && killer == Hero.Hp) { kills++; AddXp(150); HitMarker(false, true); SFX.Play(Sfx.Kill, 0.9f, 0f); HitStop(0.08f); }
+            Toast(r.Hp.displayName + " повержен!");
+            StartCoroutine(EndAfter(2.5f, true, "Соперник повержен. Вы — последний выживший!"));
         }
 
         void AddXp(int amount)
@@ -469,22 +467,31 @@ namespace Relict
             }
         }
 
-        public Vector3 RivalGoal(Vector3 from)
+        // Where the rival walks when it has nothing to fight.
+        public Vector3 RivalGoal(RivalAI r)
         {
-            if (ExtractOpen && (TimeLeft < 150f)) return extractionPoint.position;
-            Pickup best = null; float bd = float.MaxValue;
-            foreach (var p in Pickup.All)
+            int z = cleared[r.arm];
+            if (z < 3)
             {
-                if (p == null || p.kind != PickupKind.Artifact) continue;
-                float d = (p.transform.position - from).sqrMagnitude;
-                if (boss != null && !boss.Hp.Dead && (p.transform.position - bossSpot.position).magnitude < 8f) continue;
-                if (d < bd) { bd = d; best = p; }
+                var list = zoneMobs[r.arm, z];
+                EnemyAI best = null; float bd = float.MaxValue;
+                foreach (var e in list)
+                {
+                    if (e == null || e.Dying) continue;
+                    float d = (e.transform.position - r.transform.position).sqrMagnitude;
+                    if (d < bd) { bd = d; best = e; }
+                }
+                if (best != null) return best.transform.position;
+                return LGeo.ArmPoint(r.arm, LGeo.ZoneMid[z]);
             }
-            if (best != null) return best.transform.position;
-            return ExtractOpen ? extractionPoint.position : new Vector3(Mathf.Sin(Time.time * 0.05f) * 25f, 0, Mathf.Cos(Time.time * 0.05f) * 25f);
+            // arena: hunt the hero if they are there, otherwise fight the boss
+            if (Hero != null && !Hero.Hp.Dead && LGeo.Locate(Hero.transform.position, out _) == -1) return Hero.transform.position;
+            if (boss != null && !boss.Hp.Dead) return boss.transform.position;
+            if (Hero != null && !Hero.Hp.Dead && cleared[0] >= 3) return Hero.transform.position;
+            return Vector3.zero;
         }
 
-        public void RivalTick(RivalAI r, float dt)
+        public void RivalTick(RivalAI r)
         {
             Vector3 pos = r.transform.position;
             for (int i = Pickup.All.Count - 1; i >= 0; i--)
@@ -492,23 +499,7 @@ namespace Relict
                 var p = Pickup.All[i];
                 if (p == null || p.kind == PickupKind.Heal) continue;
                 Vector3 d = p.transform.position - pos; d.y = 0;
-                if (d.magnitude < 1.3f) { Collect(p, r); Destroy(p.gameObject); }
-            }
-            if (ExtractOpen)
-            {
-                Vector3 d = pos - extractionPoint.position; d.y = 0;
-                if (d.magnitude < extractRadius)
-                {
-                    r.extractProgress += dt;
-                    if (r.extractProgress >= extractHold)
-                    {
-                        Toast(r.Hp.displayName + " эвакуировался с " + r.artifacts.Count + " артеф.");
-                        AddToBoard(r.Hp.displayName, r.gold + r.artifactValues.Sum());
-                        rivals.Remove(r);
-                        Destroy(r.gameObject);
-                    }
-                }
-                else r.extractProgress = 0f;
+                if (d.magnitude < 1.4f) { Collect(p, r); Destroy(p.gameObject); }
             }
         }
 
