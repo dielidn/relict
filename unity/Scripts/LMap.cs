@@ -65,6 +65,64 @@ namespace Relict
         }
 
         public static Vector3 OnGround(Vector3 p) { p.y = Ground(p) + 0.05f; return p; }
+
+        // Shallow ponds in the clearings (centre XZ, radius).
+        public static readonly Vector3[] Ponds = BuildPonds();
+        static Vector3[] BuildPonds()
+        {
+            var list = new System.Collections.Generic.List<Vector3>();
+            for (int arm = 0; arm < 2; arm++)
+            {
+                void Add(float t, float lat, float r) { var c = ArmPoint(arm, t) + ArmRight(arm, t) * lat; list.Add(new Vector3(c.x, r, c.z)); }
+                Add(128f, 9f, 4.5f);
+                Add(96f, -10f, 6f);
+                Add(60f, 10f, 5f);
+            }
+            list.Add(new Vector3(13f, 7f, -14f));
+            list.Add(new Vector3(-16f, 5f, 12f));
+            return list.ToArray();
+        }
+
+        public static float PondDepth(float x, float z)
+        {
+            float best = 0f;
+            foreach (var p in Ponds)
+            {
+                float d = Vector2.Distance(new Vector2(x, z), new Vector2(p.x, p.z));
+                float k = 1f - Mathf.Clamp01((d - p.y * 0.55f) / (p.y * 0.6f));
+                best = Mathf.Max(best, k);
+            }
+            return best;
+        }
+
+        // Signed distance outside the walkable area (<0 inside) and distance to the trodden path.
+        public static float Outside(float x, float z, out float pathDist)
+        {
+            pathDist = 999f;
+            float e = 999f;
+            for (int arm = 0; arm < 2; arm++)
+            {
+                float t = arm == 0 ? -z : -x;
+                float lat = arm == 0 ? x : z;
+                if (t < 0f) continue;
+                if (t > ArmLength)
+                {
+                    var end = ArmPoint(arm, ArmLength);
+                    e = Mathf.Min(e, Vector2.Distance(new Vector2(x, z), new Vector2(end.x, end.z)) - HalfWidthAt(ArmLength));
+                    continue;
+                }
+                var c = ArmPoint(arm, t);
+                float off = Mathf.Abs(lat - (arm == 0 ? c.x : c.z));
+                e = Mathf.Min(e, off - HalfWidthAt(t));
+                if (t > ArenaRadius - 4f) pathDist = Mathf.Min(pathDist, off);
+            }
+            float r = new Vector2(x, z).magnitude;
+            float ang = Mathf.Atan2(z, x);
+            float ar = ArenaRadius + 4f * (Mathf.PerlinNoise(Mathf.Cos(ang) * 1.5f + 5f, Mathf.Sin(ang) * 1.5f + 5f) - 0.5f);
+            e = Mathf.Min(e, r - ar);
+            pathDist = Mathf.Min(pathDist, Mathf.Abs(r - 14f));
+            return e;
+        }
     }
 
     public class LMap : MonoBehaviour

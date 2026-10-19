@@ -19,40 +19,13 @@ public static class LMapBuilder
     // ---------- shape ----------
     static float ArmWiggle(int arm, float t) => arm == 0 ? LGeo.ArmPoint(0, t).x : LGeo.ArmPoint(1, t).z;
 
-    // signed distance outside the walkable area (<0 inside), plus distance to the trodden path
-    public static float Outside(float x, float z, out float pathDist)
-    {
-        pathDist = 999f;
-        float e = 999f;
-        for (int arm = 0; arm < 2; arm++)
-        {
-            float t = arm == 0 ? -z : -x;
-            float lat = arm == 0 ? x : z;
-            if (t < 0f) continue;
-            float d;
-            if (t > LGeo.ArmLength)
-            {
-                var end = LGeo.ArmPoint(arm, LGeo.ArmLength);
-                d = Vector2.Distance(new Vector2(x, z), new Vector2(end.x, end.z)) - LGeo.HalfWidthAt(LGeo.ArmLength);
-                e = Mathf.Min(e, d);
-                continue;
-            }
-            float off = Mathf.Abs(lat - ArmWiggle(arm, t));
-            e = Mathf.Min(e, off - LGeo.HalfWidthAt(t));
-            pathDist = Mathf.Min(pathDist, off);
-        }
-        float r = new Vector2(x, z).magnitude;
-        float ang = Mathf.Atan2(z, x);
-        float ar = LGeo.ArenaRadius + 4f * (Mathf.PerlinNoise(Mathf.Cos(ang) * 1.5f + 5f, Mathf.Sin(ang) * 1.5f + 5f) - 0.5f);
-        e = Mathf.Min(e, r - ar);
-        pathDist = Mathf.Min(pathDist, Mathf.Abs(r - 14f));
-        return e;
-    }
+    public static float Outside(float x, float z, out float pathDist) => LGeo.Outside(x, z, out pathDist);
 
     static float HeightAt(float x, float z)
     {
         float e = Outside(x, z, out _);
         float floor = 0.5f * (Mathf.PerlinNoise(x * 0.06f + 10f, z * 0.06f + 10f) - 0.5f) + 0.25f * (Mathf.PerlinNoise(x * 0.2f, z * 0.2f) - 0.5f);
+        floor -= 0.7f * LGeo.PondDepth(x, z);
         if (e <= 0f) return floor;
         float ridge = 15f + 9f * Mathf.PerlinNoise(x * 0.025f + 40f, z * 0.025f + 40f);
         float k = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(e / 9f));
@@ -190,7 +163,14 @@ public static class LMapBuilder
             c = Color.Lerp(c, new Color(0.2f, 0.3f, 0.14f), Mathf.Clamp01((n - 0.5f) * 2.5f));
             return c * (0.8f + 0.35f * f);
         });
-        var layers = new[] { Layer("L_Grass", grassT, 7f), Layer("L_Litter", litterT, 6f), Layer("L_Dirt", dirtT, 5f), Layer("L_Rock", rockT, 12f) };
+        var mossT = MakeTex("T_Moss", (x, y) =>
+        {
+            float n = Tile(x, y, 512, 0.03f, 41f), f = Tile(x, y, 512, 0.2f, 43f), sp = Tile(x, y, 512, 0.7f, 47f);
+            var c = Color.Lerp(new Color(0.16f, 0.32f, 0.06f), new Color(0.38f, 0.6f, 0.12f), n);
+            c = Color.Lerp(c, new Color(0.2f, 0.22f, 0.18f), Mathf.Clamp01((0.35f - f) * 3f));
+            return c * (0.8f + 0.35f * sp);
+        });
+        var layers = new[] { Layer("L_Grass", grassT, 7f), Layer("L_Litter", litterT, 6f), Layer("L_Dirt", dirtT, 5f), Layer("L_Rock", rockT, 12f), Layer("L_Moss", mossT, 8f) };
 
         // ---------- terrain ----------
         var data = new TerrainData();
@@ -209,7 +189,7 @@ public static class LMapBuilder
         data.terrainLayers = layers;
         data.alphamapResolution = 512;
         int A = data.alphamapResolution;
-        var al = new float[A, A, 4];
+        var al = new float[A, A, 5];
         for (int i = 0; i < A; i++)
             for (int j = 0; j < A; j++)
             {
@@ -223,9 +203,14 @@ public static class LMapBuilder
                 float litter = Mathf.Clamp01(1f - Mathf.Abs(e + 1.5f) / 4f) * (0.5f + nz);
                 if (e > 2f) litter = Mathf.Max(litter, 0.6f);
                 float grass = 1f;
-                float[] w = { grass, litter, path * 2f, rock * 3f };
+                float mossN = Mathf.PerlinNoise(x * 0.07f + 3f, z * 0.07f + 9f);
+                float moss = Mathf.Clamp01((steep - 14f) / 10f) * (0.4f + mossN) * 1.6f;
+                rock *= Mathf.Clamp01(1.4f - mossN);
+                float pond = LGeo.PondDepth(x, z);
+                litter += pond * 2f;
+                float[] w = { grass, litter, path * 2f, rock * 3f, moss };
                 float sum = w.Sum();
-                for (int k = 0; k < 4; k++) al[i, j, k] = w[k] / sum;
+                for (int k = 0; k < 5; k++) al[i, j, k] = w[k] / sum;
             }
         data.SetAlphamaps(0, 0, al);
         AssetDatabase.CreateAsset(data, Out + "/LMap_TerrainData.asset");
@@ -300,28 +285,79 @@ public static class LMapBuilder
             if (Place(Pick(palms), x, z, Random.Range(0, 360f), Random.Range(2.2f, 3.6f), veg)) palmCount++;
         }
 
-        // ---------- undergrowth ----------
-        int plantCount = 0;
-        for (int i = 0; i < 9000 && plantCount < 2600; i++)
+        // ---------- mossy cliff faces along the walls ----------
+        for (int arm = 0; arm < 2; arm++)
+            for (float t = 36f; t <= LGeo.ArmLength; t += 7.5f)
+                for (int side = -1; side <= 1; side += 2)
+                {
+                    if (Random.value < 0.3f) continue;
+                    var c = LGeo.ArmPoint(arm, t);
+                    var p = c + LGeo.ArmRight(arm, t) * side * (LGeo.HalfWidthAt(t) + Random.Range(3f, 6f));
+                    var r = Place(Random.value < 0.7f ? "Rock_Mossy" : "Rock_BlackRound", p.x, p.z, Random.Range(0, 360f), Random.Range(7f, 12f), rocks, 0.25f);
+                    if (r) { r.transform.rotation = Quaternion.Euler(Random.Range(-12f, 12f), 0, Random.Range(-12f, 12f)) * r.transform.rotation; MeshColliders(r); }
+                }
+        for (float a = 0f; a < 360f; a += 16f)
         {
-            float x = Random.Range(-175f, 45f), z = Random.Range(-175f, 45f);
-            float e = Outside(x, z, out float pd);
-            if (e > 3f || e < -12f) continue;
-            if (pd < 2.6f) continue;
-            float edge = Mathf.Clamp01((e + 10f) / 10f);           // 1 near walls, 0 in the middle
-            if (Random.value > 0.25f + 0.75f * edge) continue;
-            string n = Random.value < 0.4f ? "Grass_Clump" : edge > 0.55f ? Pick(bushes) : Pick(small);
-            float sc = n == "Grass_Clump" ? Random.Range(1.1f, 1.8f) : Random.Range(1.1f, 1.6f + edge * 1.2f);
-            if (Place(n, x, z, Random.Range(0, 360f), sc, veg, 0.02f)) plantCount++;
+            if (Mathf.Abs(Mathf.DeltaAngle(a, 270f)) < 24f || Mathf.Abs(Mathf.DeltaAngle(a, 180f)) < 24f) continue;
+            float rad = a * Mathf.Deg2Rad;
+            var p = new Vector3(Mathf.Cos(rad), 0, Mathf.Sin(rad)) * (LGeo.ArenaRadius + Random.Range(4f, 7f));
+            var r = Place("Rock_Mossy", p.x, p.z, Random.Range(0, 360f), Random.Range(8f, 13f), rocks, 0.25f);
+            if (r) MeshColliders(r);
         }
-        for (int i = 0; i < 2500; i++)
+
+        // ---------- ponds ----------
+        var water = AssetDatabase.LoadAssetAtPath<Material>(Out + "/M_Water.mat");
+        if (water == null) { water = new Material(Shader.Find("Universal Render Pipeline/Lit")); AssetDatabase.CreateAsset(water, Out + "/M_Water.mat"); }
+        water.SetFloat("_Surface", 1f); water.SetFloat("_Blend", 0f);
+        water.SetFloat("_SrcBlend", (float)UnityEngine.Rendering.BlendMode.SrcAlpha);
+        water.SetFloat("_DstBlend", (float)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+        water.SetFloat("_ZWrite", 0f);
+        water.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+        water.renderQueue = 3000;
+        water.SetColor("_BaseColor", new Color(0.06f, 0.2f, 0.18f, 0.62f));
+        water.SetFloat("_Smoothness", 0.96f); water.SetFloat("_Metallic", 0.1f);
+        EditorUtility.SetDirty(water);
+        var ponds = new GameObject("Ponds").transform; ponds.SetParent(map);
+        foreach (var pd in LGeo.Ponds)
         {
-            float x = Random.Range(-175f, 45f), z = Random.Range(-175f, 45f);
-            float e = Outside(x, z, out float pd);
-            if (e > 0f || pd < 1.8f) continue;
-            if (Random.value < 0.5f) Place("Grass_Clump", x, z, Random.Range(0, 360f), Random.Range(0.9f, 1.4f), veg, 0.02f);
-            else if (Random.value < 0.3f) Place(Random.value < 0.5f ? "Ground_MossPatch" : "Stones_Scatter", x, z, Random.Range(0, 360f), Random.Range(1.2f, 2.2f), veg, 0.0f);
+            var w = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            Object.DestroyImmediate(w.GetComponent<Collider>());
+            w.name = "Pond";
+            w.transform.SetParent(ponds);
+            float wy = LGeo.Ground(new Vector3(pd.x + pd.y * 1.3f, 0, pd.z)) - 0.12f;
+            w.transform.position = new Vector3(pd.x, Mathf.Min(wy, -0.1f), pd.z);
+            w.transform.localScale = new Vector3(pd.y * 2.3f, 0.005f, pd.y * 2.3f);
+            w.GetComponent<Renderer>().sharedMaterial = water;
+            w.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            w.isStatic = true;
+            // crystals and stones at the shore
+            for (int i = 0; i < 4; i++)
+            {
+                float a = Random.Range(0f, Mathf.PI * 2f);
+                var q = new Vector3(pd.x, 0, pd.z) + new Vector3(Mathf.Cos(a), 0, Mathf.Sin(a)) * pd.y * Random.Range(0.6f, 1.1f);
+                var go = Place(i == 0 ? Pick(cryG) : Pick(cry), q.x, q.z, Random.Range(0, 360f), Random.Range(1.2f, 2.4f), crystals, 0.1f);
+                if (go && i == 0) MeshColliders(go);
+            }
+            var pl = new GameObject("PondGlow").AddComponent<Light>();
+            pl.type = LightType.Point; pl.range = 9f; pl.intensity = 1.6f; pl.color = new Color(0.4f, 0.95f, 0.8f);
+            pl.transform.position = new Vector3(pd.x, 1.2f, pd.z);
+            pl.transform.SetParent(lights, true);
         }
+
+        // ---------- dense instanced vegetation (drawn at runtime) ----------
+        var scatter = map.gameObject.AddComponent<FoliageScatter>();
+        GameObject[] G(params string[] n) => n.Select(P).Where(x => x != null).ToArray();
+        scatter.layers = new[]
+        {
+            new FoliageScatter.Layer { name = "grass", prefabs = G("Grass_Clump"), count = 26000, minE = -16f, maxE = 1.5f, minPath = 0.9f, scale = new Vector2(0.9f, 1.7f), drawDistance = 55f },
+            new FoliageScatter.Layer { name = "ferns", prefabs = G("Fern_Light", "Fern_Bush", "Fern_Light"), count = 9000, minE = -12f, maxE = 3f, edgeBias = 0.6f, minPath = 1.8f, scale = new Vector2(1.0f, 2.2f), drawDistance = 75f },
+            new FoliageScatter.Layer { name = "bushes", prefabs = G("Plant_BananaLeaves", "Plant_SpikyYucca", "Agave_BlueGrass", "Fern_Bush"), count = 3800, minE = -7f, maxE = 4f, edgeBias = 0.8f, minPath = 2.6f, scale = new Vector2(1.5f, 3.2f), drawDistance = 110f, shadows = true },
+            new FoliageScatter.Layer { name = "flowers", prefabs = G("Flower_RedRosette", "Succulent_GreenRosette", "Plant_StarRosette", "Plant_Sprout", "Mushroom_Group4", "Mushroom_Group5", "Mushroom_Pair", "Pineapple_Green", "Pineapple_Ripe"), count = 3600, minE = -14f, maxE = 0.5f, minPath = 1.6f, scale = new Vector2(1.1f, 2.8f), drawDistance = 60f },
+            new FoliageScatter.Layer { name = "moss", prefabs = G("Ground_MossPatch"), count = 2200, minE = -16f, maxE = 2f, minPath = 1.4f, scale = new Vector2(1.4f, 3f), drawDistance = 65f, avoidPonds = false },
+            new FoliageScatter.Layer { name = "slopes", prefabs = G("Fern_Bush", "Plant_BananaLeaves", "Fern_Light", "Plant_SpikyYucca"), count = 7000, minE = 1f, maxE = 14f, scale = new Vector2(1.8f, 3.4f), drawDistance = 130f },
+            new FoliageScatter.Layer { name = "stepping stones", prefabs = G("Rock_BlackFlat", "Rock_BlackRound"), count = 1500, onPath = true, scale = new Vector2(0.9f, 1.5f), flatten = 0.22f, drawDistance = 90f, shadows = true },
+            new FoliageScatter.Layer { name = "pebbles", prefabs = G("Stones_Scatter"), count = 1400, minE = -16f, maxE = 0f, minPath = 0f, scale = new Vector2(1.2f, 2.4f), drawDistance = 60f, avoidPonds = false },
+        };
 
         // ---------- rocks ----------
         for (int i = 0; i < 6000; i++)
@@ -375,9 +411,9 @@ public static class LMapBuilder
 
         // ---------- hanging vines from the canopy ----------
         for (int arm = 0; arm < 2; arm++)
-            for (float t = 40f; t < LGeo.ArmLength; t += 7f)
+            for (float t = 40f; t < LGeo.ArmLength; t += 3.5f)
             {
-                if (Random.value < 0.4f) continue;
+                if (Random.value < 0.25f) continue;
                 int side = Random.value < 0.5f ? -1 : 1;
                 var p = LGeo.ArmPoint(arm, t) + LGeo.ArmRight(arm, t) * side * (LGeo.HalfWidthAt(t) - Random.Range(0.5f, 3f));
                 var v = Place(Random.value < 0.5f ? "Vines_HangingStrands" : "Vines_HangingLoops", p.x, p.z, Random.Range(0, 360f), Random.Range(1.8f, 2.8f), veg, 0f);
@@ -454,7 +490,9 @@ public static class LMapBuilder
             cam.transform.LookAt(origin + new Vector3(-0.1f, 1.0f, 1.5f));
             cam.farClipPlane = 260f;
         }
-        RenderSettings.fogDensity = 0.011f;
+        RenderSettings.fogDensity = 0.012f;
+        RenderSettings.fogColor = new Color(0.5f, 0.66f, 0.55f);
+        RenderSettings.ambientEquatorColor = new Color(0.42f, 0.56f, 0.36f);
 
         EditorSceneManager.MarkSceneDirty(scene);
         EditorSceneManager.SaveScene(scene);
