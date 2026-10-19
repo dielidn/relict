@@ -497,7 +497,7 @@ public static class LMapBuilder
         EditorSceneManager.MarkSceneDirty(scene);
         EditorSceneManager.SaveScene(scene);
         AssetDatabase.SaveAssets();
-        Debug.Log($"L map built: palms {palmCount}, plants {plantCount}, objects {map.GetComponentsInChildren<Transform>().Length}");
+        Debug.Log($"L map built: palms {palmCount}, objects {map.GetComponentsInChildren<Transform>().Length}");
     }
 }
 #endif
