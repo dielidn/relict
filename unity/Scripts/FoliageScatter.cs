@@ -23,14 +23,26 @@ namespace Relict
             public bool shadows;
             public bool avoidPonds = true;
             public bool onPath;                         // stepping stones along the path
+            public int lodNear = 2;                     // mesh LOD used right next to the camera
+            public float lodStep = 12f;                 // metres per extra LOD level
+            public float shadowDistance = 30f;
         }
+
+        // Quality knobs (set from GameSettings).
+        public static float Density = 1f, DistanceMul = 1f;
+        public static FoliageScatter I;
+        static readonly float[] TierReach = { 1f, 0.7f, 0.45f };
 
         public Layer[] layers;
         public int seed = 77;
         public float cellSize = 24f;
 
         class Part { public Mesh mesh; public Material[] mats; public Matrix4x4 local; }
-        class Batch { public Mesh mesh; public int sub; public Material mat; public bool shadows; public float dist; public List<Matrix4x4[]> chunks = new List<Matrix4x4[]>(); }
+        class Batch
+        {
+            public Mesh mesh; public int sub; public Material mat; public Layer layer;
+            public List<Matrix4x4[]>[] tiers = { new List<Matrix4x4[]>(), new List<Matrix4x4[]>(), new List<Matrix4x4[]>() };
+        }
         class Cell { public Bounds bounds; public List<Batch> batches = new List<Batch>(); }
 
         readonly Dictionary<Vector2Int, Cell> cells = new Dictionary<Vector2Int, Cell>();
@@ -53,7 +65,8 @@ namespace Relict
             return list;
         }
 
-        void Start() { Generate(); }
+        void Awake() { I = this; }
+        void Start() { GameSettings.Load(); Generate(); }
 
         public void Generate()
         {
@@ -61,8 +74,8 @@ namespace Relict
             TotalInstances = 0;
             var rng = new System.Random(seed);
             float R() => (float)rng.NextDouble();
-            var temp = new Dictionary<(Vector2Int, Mesh, int, Material), List<Matrix4x4>>();
-            var batchInfo = new Dictionary<(Vector2Int, Mesh, int, Material), (bool, float)>();
+            var temp = new Dictionary<(Vector2Int, Mesh, int, Material, int), List<Matrix4x4>>();
+            var batchLayer = new Dictionary<(Vector2Int, Mesh, int, Material, int), Layer>();
 
             foreach (var layer in layers)
             {
@@ -71,8 +84,9 @@ namespace Relict
                 foreach (var p in layer.prefabs) if (p) partsPer.Add(Parts(p));
                 if (partsPer.Count == 0) continue;
 
+                int target = Mathf.RoundToInt(layer.count * Mathf.Clamp(Density, 0.1f, 1.5f));
                 int placed = 0, tries = 0;
-                while (placed < layer.count && tries < layer.count * 12)
+                while (placed < target && tries < target * 12)
                 {
                     tries++;
                     Vector3 pos;
@@ -110,11 +124,13 @@ namespace Relict
                     var trs = Matrix4x4.TRS(pos, Quaternion.Euler(0, R() * 360f, 0), new Vector3(sc, sc * layer.flatten, sc));
                     var parts = partsPer[rng.Next(partsPer.Count)];
                     var key2 = new Vector2Int(Mathf.FloorToInt(pos.x / cellSize), Mathf.FloorToInt(pos.z / cellSize));
+                    float tr = R();
+                    int tier = tr < 0.4f ? 0 : tr < 0.7f ? 1 : 2;
                     foreach (var part in parts)
                         for (int sub = 0; sub < part.mesh.subMeshCount && sub < part.mats.Length; sub++)
                         {
-                            var key = (key2, part.mesh, sub, part.mats[sub]);
-                            if (!temp.TryGetValue(key, out var l)) { l = new List<Matrix4x4>(); temp[key] = l; batchInfo[key] = (layer.shadows, layer.drawDistance); }
+                            var key = (key2, part.mesh, sub, part.mats[sub], tier);
+                            if (!temp.TryGetValue(key, out var l)) { l = new List<Matrix4x4>(); temp[key] = l; batchLayer[key] = layer; }
                             l.Add(trs * part.local);
                         }
                     placed++;
@@ -133,12 +149,12 @@ namespace Relict
                     cell.bounds = new Bounds(c, new Vector3(cellSize + 8f, 60f, cellSize + 8f));
                     cells[ck] = cell;
                 }
-                var info = batchInfo[kv.Key];
-                var b = new Batch { mesh = kv.Key.Item2, sub = kv.Key.Item3, mat = kv.Key.Item4, shadows = info.Item1, dist = info.Item2 };
+                var layer = batchLayer[kv.Key];
+                var b = cell.batches.Find(x => x.mesh == kv.Key.Item2 && x.sub == kv.Key.Item3 && x.mat == kv.Key.Item4 && x.layer == layer);
+                if (b == null) { b = new Batch { mesh = kv.Key.Item2, sub = kv.Key.Item3, mat = kv.Key.Item4, layer = layer }; cell.batches.Add(b); }
                 var all = kv.Value;
                 for (int i = 0; i < all.Count; i += 1000)
-                    b.chunks.Add(all.GetRange(i, Mathf.Min(1000, all.Count - i)).ToArray());
-                cell.batches.Add(b);
+                    b.tiers[kv.Key.Item5].Add(all.GetRange(i, Mathf.Min(1000, all.Count - i)).ToArray());
             }
         }
 
@@ -154,15 +170,24 @@ namespace Relict
                 float d = Mathf.Sqrt(cell.bounds.SqrDistance(cp));
                 foreach (var b in cell.batches)
                 {
-                    if (d > b.dist || b.mat == null) continue;
+                    var L = b.layer;
+                    float reach = L.drawDistance * DistanceMul;
+                    if (d > reach || b.mat == null) continue;
+                    int lods = Mathf.Max(1, b.mesh.lodCount);
+                    int lod = Mathf.Min(lods - 1, L.lodNear + Mathf.FloorToInt(d / Mathf.Max(1f, L.lodStep)));
                     var rp = new RenderParams(b.mat)
                     {
-                        shadowCastingMode = b.shadows && d < 45f ? ShadowCastingMode.On : ShadowCastingMode.Off,
+                        shadowCastingMode = L.shadows && d < L.shadowDistance ? ShadowCastingMode.On : ShadowCastingMode.Off,
                         receiveShadows = true,
                         worldBounds = cell.bounds,
-                        layer = gameObject.layer
+                        layer = gameObject.layer,
+                        forceMeshLod = lods > 1 ? lod : -1
                     };
-                    foreach (var chunk in b.chunks) Graphics.RenderMeshInstanced(rp, b.mesh, b.sub, chunk);
+                    for (int t = 0; t < 3; t++)
+                    {
+                        if (d > reach * TierReach[t]) continue;
+                        foreach (var chunk in b.tiers[t]) Graphics.RenderMeshInstanced(rp, b.mesh, b.sub, chunk);
+                    }
                 }
             }
         }

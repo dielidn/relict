@@ -1,4 +1,6 @@
 using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 
 namespace Relict
 {
@@ -28,7 +30,7 @@ namespace Relict
             Sensitivity = PlayerPrefs.GetFloat("relict_sens", 0.11f);
             InvertY = PlayerPrefs.GetInt("relict_invert", 0) == 1;
             Fov = PlayerPrefs.GetFloat("relict_fov", 60f);
-            Quality = PlayerPrefs.GetInt("relict_quality", QualitySettings.GetQualityLevel());
+            Quality = PlayerPrefs.GetInt("relict_quality", DefaultQuality());
             Fullscreen = PlayerPrefs.GetInt("relict_fullscreen", 1) == 1;
             ResolutionIndex = PlayerPrefs.GetInt("relict_res", -1);
             VSync = PlayerPrefs.GetInt("relict_vsync", 1) == 1;
@@ -55,9 +57,42 @@ namespace Relict
         public static void ResetToDefaults()
         {
             Sensitivity = 0.11f; InvertY = false; Fov = 60f;
-            Quality = QualitySettings.names.Length - 1;
+            Quality = DefaultQuality();
             Fullscreen = true; ResolutionIndex = -1; VSync = true; DamageNumbers = true; Volume = 0.8f;
             Apply(true);
+        }
+
+        // 0 = high, 1 = medium, 2 = low (matches the order of the quality levels)
+        public static int DefaultQuality()
+        {
+            int vram = SystemInfo.graphicsMemorySize;
+            if (vram > 0 && vram <= 4500) return Mathf.Min(1, QualitySettings.names.Length - 1);
+            return 0;
+        }
+
+        public static readonly string[] QualityNames = { "Высокое", "Среднее", "Низкое" };
+
+        static float lastDensity = -1f;
+        static void ApplyRenderQuality()
+        {
+            int q = Mathf.Clamp(Quality, 0, 2);
+            var urp = GraphicsSettings.currentRenderPipeline as UniversalRenderPipelineAsset;
+            if (urp)
+            {
+                urp.msaaSampleCount = 1;
+                urp.renderScale = q == 0 ? 1f : q == 1 ? 0.85f : 0.7f;
+                urp.upscalingFilter = UpscalingFilterSelection.FSR;
+                urp.shadowDistance = q == 0 ? 70f : q == 1 ? 45f : 30f;
+                urp.shadowCascadeCount = q == 0 ? 3 : q == 1 ? 2 : 1;
+            }
+            FoliageScatter.Density = q == 0 ? 1f : q == 1 ? 0.7f : 0.45f;
+            FoliageScatter.DistanceMul = q == 0 ? 1f : q == 1 ? 0.8f : 0.6f;
+            if (!Mathf.Approximately(lastDensity, FoliageScatter.Density))
+            {
+                bool changed = lastDensity >= 0f;
+                lastDensity = FoliageScatter.Density;
+                if (changed && FoliageScatter.I) FoliageScatter.I.Generate();
+            }
         }
 
         public static Resolution[] Resolutions()
@@ -87,6 +122,7 @@ namespace Relict
             if (Quality >= 0 && Quality < QualitySettings.names.Length && QualitySettings.GetQualityLevel() != Quality)
                 QualitySettings.SetQualityLevel(Quality, true);
             QualitySettings.vSyncCount = VSync ? 1 : 0;
+            ApplyRenderQuality();
             Application.targetFrameRate = VSync ? -1 : 144;
             AudioListener.volume = Volume;
             var cam = Camera.main;

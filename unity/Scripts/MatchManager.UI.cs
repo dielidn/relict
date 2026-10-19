@@ -956,7 +956,7 @@ namespace Relict
             Row("Качество графики");
             var qn = QualitySettings.names;
             int q = Mathf.Clamp(GameSettings.Quality, 0, qn.Length - 1);
-            int nq = Stepper(new Rect(cx, y, cw, rh), q, qn.Length, qn[q]);
+            int nq = Stepper(new Rect(cx, y, cw, rh), q, qn.Length, q < GameSettings.QualityNames.Length ? GameSettings.QualityNames[q] : qn[q]);
             if (nq != q) { GameSettings.Quality = nq; GameSettings.Apply(false); }
             y += 54 * s;
             Row("Полный экран", Application.isEditor ? "в редакторе — через окно Game" : "F11 — быстрое переключение");

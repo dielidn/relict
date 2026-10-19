@@ -349,14 +349,13 @@ public static class LMapBuilder
         GameObject[] G(params string[] n) => n.Select(P).Where(x => x != null).ToArray();
         scatter.layers = new[]
         {
-            new FoliageScatter.Layer { name = "grass", prefabs = G("Grass_Clump"), count = 26000, minE = -16f, maxE = 1.5f, minPath = 0.9f, scale = new Vector2(0.9f, 1.7f), drawDistance = 55f },
-            new FoliageScatter.Layer { name = "ferns", prefabs = G("Fern_Light", "Fern_Bush", "Fern_Light"), count = 9000, minE = -12f, maxE = 3f, edgeBias = 0.6f, minPath = 1.8f, scale = new Vector2(1.0f, 2.2f), drawDistance = 75f },
-            new FoliageScatter.Layer { name = "bushes", prefabs = G("Plant_BananaLeaves", "Plant_SpikyYucca", "Agave_BlueGrass", "Fern_Bush"), count = 3800, minE = -7f, maxE = 4f, edgeBias = 0.8f, minPath = 2.6f, scale = new Vector2(1.5f, 3.2f), drawDistance = 110f, shadows = true },
-            new FoliageScatter.Layer { name = "flowers", prefabs = G("Flower_RedRosette", "Succulent_GreenRosette", "Plant_StarRosette", "Plant_Sprout", "Mushroom_Group4", "Mushroom_Group5", "Mushroom_Pair", "Pineapple_Green", "Pineapple_Ripe"), count = 3600, minE = -14f, maxE = 0.5f, minPath = 1.6f, scale = new Vector2(1.1f, 2.8f), drawDistance = 60f },
-            new FoliageScatter.Layer { name = "moss", prefabs = G("Ground_MossPatch"), count = 2200, minE = -16f, maxE = 2f, minPath = 1.4f, scale = new Vector2(1.4f, 3f), drawDistance = 65f, avoidPonds = false },
-            new FoliageScatter.Layer { name = "slopes", prefabs = G("Fern_Bush", "Plant_BananaLeaves", "Fern_Light", "Plant_SpikyYucca"), count = 7000, minE = 1f, maxE = 14f, scale = new Vector2(1.8f, 3.4f), drawDistance = 130f },
-            new FoliageScatter.Layer { name = "stepping stones", prefabs = G("Rock_BlackFlat", "Rock_BlackRound"), count = 1500, onPath = true, scale = new Vector2(0.9f, 1.5f), flatten = 0.22f, drawDistance = 90f, shadows = true },
-            new FoliageScatter.Layer { name = "pebbles", prefabs = G("Stones_Scatter"), count = 1400, minE = -16f, maxE = 0f, minPath = 0f, scale = new Vector2(1.2f, 2.4f), drawDistance = 60f, avoidPonds = false },
+            new FoliageScatter.Layer { name = "grass", prefabs = G("Grass_Clump"), count = 18000, minE = -16f, maxE = 1.5f, minPath = 0.9f, scale = new Vector2(1.0f, 1.8f), drawDistance = 45f, lodNear = 3, lodStep = 9f },
+            new FoliageScatter.Layer { name = "ferns", prefabs = G("Fern_Light"), count = 5000, minE = -12f, maxE = 3f, edgeBias = 0.6f, minPath = 1.8f, scale = new Vector2(1.1f, 2.3f), drawDistance = 60f, lodNear = 2, lodStep = 10f },
+            new FoliageScatter.Layer { name = "bushes", prefabs = G("Plant_BananaLeaves", "Plant_SpikyYucca", "Agave_BlueGrass", "Fern_Bush"), count = 2600, minE = -7f, maxE = 4f, edgeBias = 0.8f, minPath = 2.6f, scale = new Vector2(1.5f, 3.2f), drawDistance = 90f, shadows = true, shadowDistance = 28f, lodNear = 2, lodStep = 14f },
+            new FoliageScatter.Layer { name = "flowers", prefabs = G("Flower_RedRosette", "Succulent_GreenRosette", "Plant_StarRosette", "Plant_Sprout", "Mushroom_Pair", "Pineapple_Green", "Pineapple_Ripe"), count = 2500, minE = -14f, maxE = 0.5f, minPath = 1.6f, scale = new Vector2(1.1f, 2.8f), drawDistance = 45f, lodNear = 1, lodStep = 10f },
+            new FoliageScatter.Layer { name = "slopes", prefabs = G("Fern_Light", "Plant_BananaLeaves", "Plant_SpikyYucca", "Fern_Bush"), count = 4000, minE = 1f, maxE = 14f, scale = new Vector2(1.8f, 3.4f), drawDistance = 100f, lodNear = 3, lodStep = 14f },
+            new FoliageScatter.Layer { name = "stepping stones", prefabs = G("Rock_BlackFlat", "Rock_BlackRound"), count = 1300, onPath = true, scale = new Vector2(0.9f, 1.5f), flatten = 0.22f, drawDistance = 80f, shadows = true, shadowDistance = 22f, lodNear = 1, lodStep = 15f },
+            new FoliageScatter.Layer { name = "pebbles", prefabs = G("Stones_Scatter"), count = 800, minE = -16f, maxE = 0f, minPath = 0f, scale = new Vector2(1.2f, 2.4f), drawDistance = 45f, avoidPonds = false, lodNear = 2, lodStep = 12f },
         };
 
         // ---------- rocks ----------
