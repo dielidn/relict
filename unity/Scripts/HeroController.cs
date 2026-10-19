@@ -207,8 +207,36 @@ namespace Relict
             if (n > 0 && tpc) tpc.Shake(0.12f);
         }
 
+        // Soft aim assist: snap to a hostile near the crosshair, or to one right in front of the hero.
+        Vector3? AssistTarget()
+        {
+            Health best = null;
+            float bestScore = float.MaxValue;
+            Vector3 hf = transform.forward;
+            foreach (var h in Health.All)
+            {
+                if (h == null || h.Dead || h.team == Team.Player) continue;
+                var tcc = h.GetComponent<CharacterController>();
+                Vector3 c = h.transform.position + (tcc ? tcc.center : Vector3.up);
+                Vector3 fromCam = c - cam.position;
+                float dist = fromCam.magnitude;
+                if (dist > 45f) continue;
+                float ang = Vector3.Angle(cam.forward, fromCam);
+                Vector3 fromHero = c - transform.position; fromHero.y = 0;
+                float score = float.MaxValue;
+                if (ang < 7f) score = ang;
+                else if (fromHero.magnitude < 4f && Vector3.Angle(hf, fromHero) < 50f) score = 6f + fromHero.magnitude;
+                if (score < bestScore) { bestScore = score; best = h; }
+            }
+            if (best == null) return null;
+            var bcc = best.GetComponent<CharacterController>();
+            return best.transform.position + (bcc ? bcc.center : Vector3.up);
+        }
+
         Vector3 AimPoint()
         {
+            var assist = AssistTarget();
+            if (assist.HasValue) return assist.Value;
             var ray = new Ray(cam.position, cam.forward);
             var hits = Physics.RaycastAll(ray, 150f, ~0, QueryTriggerInteraction.Ignore);
             float best = 150f;

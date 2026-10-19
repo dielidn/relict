@@ -115,7 +115,7 @@ namespace Relict
             Hero.Hp.Died += k => StartCoroutine(EndAfter(2.5f, false, "Вы пали в джунглях. Добыча потеряна."));
             Camera.main.GetComponent<ThirdPersonCamera>().SetTarget(go.transform);
             TimeLeft = matchLength;
-            nextWave = 35f;
+            nextWave = 45f;
             state = State.Playing;
             LockCursor(true);
             SpawnWorld();
@@ -268,7 +268,7 @@ namespace Relict
             nextWave -= dt;
             if (nextWave <= 0f)
             {
-                nextWave = ExtractOpen ? 22f : 35f;
+                nextWave = ExtractOpen ? 25f : 40f;
                 int alive = FindObjectsByType<EnemyAI>(FindObjectsInactive.Exclude).Count(e => !e.Dying);
                 if (alive < 26 && Hero != null)
                 {
@@ -278,9 +278,9 @@ namespace Relict
                     for (int a = 0; a < n; a++)
                     {
                         var e = EnemyAI.Create(InsectKind.Ant, p + Random.insideUnitSphere.Flat() * 2.5f);
-                        e.aggro = 60f; // hunting wave
+                        e.aggro = 38f; // hunting wave
                     }
-                    if (ExtractOpen) EnemyAI.Create(InsectKind.Beetle, p + Vector3.right * 3f).aggro = 60f;
+                    if (ExtractOpen) EnemyAI.Create(InsectKind.Beetle, p + Vector3.right * 3f).aggro = 38f;
                 }
             }
 
