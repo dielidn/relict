@@ -19,6 +19,7 @@ namespace Relict
         public GameObject rivalFrogModel;                   // frog swordsman model
         public RuntimeAnimatorController rivalFrogController;
         public GameObject[] artifactModels;
+        public GameObject antPrefab, ladybugPrefab, mantisPrefab, reptileBossPrefab, snakeBossPrefab;
         public GameObject[] vineModels;
 
         [Header("Places")]
@@ -109,7 +110,13 @@ namespace Relict
         }
 
         // ---------- lifecycle ----------
-        void Awake() { I = this; }
+        void Awake()
+        {
+            I = this;
+            EnemyAI.AntPrefab = antPrefab;
+            EnemyAI.LadybugPrefab = ladybugPrefab;
+            EnemyAI.MantisPrefab = mantisPrefab;
+        }
 
         void Start()
         {
@@ -409,7 +416,7 @@ namespace Relict
             int coins = Mathf.Clamp(g / 8, 1, 12);
             for (int i = 0; i < coins; i++) Pickup.Gold(e.transform.position, Mathf.Max(1, g / coins));
             if (Random.value < (e.boss || e.mini ? 1f : 0.12f)) Pickup.Heal(e.transform.position + Vector3.right, 40);
-            if (e.mini) Pickup.Artifact(e.transform.position + Vector3.forward * 1.5f, "Панцирь Колосса", 220, RandomModel(artifactModels));
+            if (e.mini) Pickup.Artifact(e.transform.position + Vector3.forward * 1.5f, "Коса Жнеца", 220, RandomModel(artifactModels));
             bool byHero = killer != null && Hero != null && killer == Hero.Hp;
             bool byRival = killer != null && Rival != null && killer == Rival.Hp;
             if (byHero)
@@ -427,7 +434,7 @@ namespace Relict
             if (e.mini && byHero)
             {
                 SlowMo(0.8f, 0.25f);
-                Banner("ЖУК-КОЛОСС ПОВЕРЖЕН", "Панцирь Колосса упал рядом");
+                Banner("БОГОМОЛ-ЖНЕЦ ПОВЕРЖЕН", "Коса Жнеца упала рядом");
             }
             if (byRival) Rival.AddXp(e.xp);
             if (e.boss)
@@ -448,7 +455,7 @@ namespace Relict
                 }
                 else Toast("Богомол-Страж повержен");
             }
-            else if (e.mini && e.arm == 0) Toast("Жук-Колосс повержен");
+            else if (e.mini && e.arm == 0) Toast("Богомол-Жнец повержен");
         }
 
         public void OnRivalKilled(RivalAI r, Health killer)

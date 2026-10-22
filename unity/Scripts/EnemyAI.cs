@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 
 namespace Relict
@@ -30,6 +31,14 @@ namespace Relict
         bool dying, attacking;
 
         public Health Hp => hp != null ? hp : (hp = GetComponent<Health>());
+
+        // Rigged creature models (set by MatchManager); primitives are used when missing.
+        public static GameObject AntPrefab, LadybugPrefab, MantisPrefab;
+        Animator anim;
+        string animState;
+        float walkRef = 2.5f, attackLen = 0.8f;
+        Color tint = Color.white;
+        static readonly MaterialPropertyBlock mpb = new MaterialPropertyBlock();
         public bool Dying => dying;
 
         // ---------- construction ----------
@@ -124,8 +133,56 @@ namespace Relict
                 l.transform.SetParent(body, false); l.transform.localPosition = new Vector3(0, 1f, 0.8f);
             }
             ai.bodyBase = body.localPosition;
+            ai.AttachModel();
             ai.title = hp.displayName;
             return ai;
+        }
+
+        // Replace the primitive body with the rigged model when it is available.
+        void AttachModel()
+        {
+            GameObject prefab = null; float size = 1f;
+            switch (kind)
+            {
+                case InsectKind.Ant: prefab = AntPrefab; size = 1.2f; walkRef = 3f; attackLen = 0.8f; break;
+                case InsectKind.Beetle: prefab = LadybugPrefab; size = 1.8f; walkRef = 2f; attackLen = 0.8f; break;
+                case InsectKind.Colossus: prefab = MantisPrefab; size = 2.9f; walkRef = 2.2f; attackLen = 0.9f; tint = new Color(1f, 0.78f, 0.62f); break;
+                case InsectKind.Mantis: prefab = MantisPrefab; size = 4.4f; walkRef = 2.6f; attackLen = 0.9f; tint = new Color(0.82f, 0.78f, 1.05f); break;
+            }
+            if (prefab == null) return;
+            foreach (Transform c in body.Cast<Transform>().ToList())
+                if (c.GetComponent<Light>() == null) Destroy(c.gameObject);
+            legs.Clear(); legBase.Clear(); armL = armR = null;
+            var m = Instantiate(prefab, body);
+            float rootScale = transform.localScale.x;
+            m.transform.localPosition = new Vector3(0, -bodyBase.y, 0);
+            m.transform.localRotation = Quaternion.identity;
+            m.transform.localScale = Vector3.one * (size / rootScale);
+            anim = m.GetComponentInChildren<Animator>();
+            bodyRenderers = m.GetComponentsInChildren<Renderer>();
+            if (kind == InsectKind.Beetle) Hp.Init(Team.Insect, Hp.max, "Божья коровка");
+            if (kind == InsectKind.Colossus) Hp.Init(Team.Insect, Hp.max, "Богомол-Жнец");
+            ApplyTint(false);
+        }
+
+        void ApplyTint(bool flash)
+        {
+            if (bodyRenderers == null) return;
+            foreach (var r in bodyRenderers)
+            {
+                if (r == null) continue;
+                r.GetPropertyBlock(mpb);
+                mpb.SetColor("_BaseColor", flash ? Color.Lerp(tint, Color.white, 0.6f) : tint);
+                mpb.SetColor("_EmissionColor", flash ? new Color(0.9f, 0.9f, 0.9f) : Color.black);
+                r.SetPropertyBlock(mpb);
+            }
+        }
+
+        void PlayAnim(string state, float fade = 0.15f)
+        {
+            if (anim == null || animState == state) return;
+            animState = state;
+            anim.CrossFadeInFixedTime(state, fade);
         }
 
         void BuildLegs(Material mat, float halfWidth, float length, float thick, float[] zs, float yOffset = 0f)
@@ -174,6 +231,7 @@ namespace Relict
             {
                 dying = true;
                 cc.enabled = false;
+                if (anim) { anim.speed = 1f; animState = "Death"; anim.CrossFadeInFixedTime("Death", 0.08f); }
                 if (MatchManager.I) MatchManager.I.OnInsectKilled(this, k);
                 Explode(k);
             };
@@ -184,11 +242,10 @@ namespace Relict
         IEnumerator Flash()
         {
             if (bodyRenderers == null) bodyRenderers = body.GetComponentsInChildren<Renderer>();
-            Juice.Tint(bodyRenderers, new Color(1f, 1f, 1f));
-            body.localScale = Vector3.one * 1.1f;
-            yield return new WaitForSeconds(0.06f);
-            if (dying) yield break;
-            Juice.Tint(bodyRenderers, null);
+            ApplyTint(true);
+            body.localScale = Vector3.one * 1.08f;
+            yield return new WaitForSeconds(0.07f);
+            ApplyTint(false);
             body.localScale = Vector3.one;
         }
 
@@ -201,7 +258,6 @@ namespace Relict
             Vector3 push = Vector3.zero;
             if (killer != null) { push = transform.position - killer.transform.position; push.y = 0; push = push.normalized * 3f; }
             push += knock * 0.5f;
-            Juice.Shatter(body, c, push, 5f + size * 1.5f, boss ? 60 : 40);
             var goo = GooColor;
             VFX.Burst(c, goo, Mathf.RoundToInt(30 * size), 5f + size, 0.18f + 0.06f * size, 0.7f, 1.2f);
             VFX.Burst(c, Color.white, 10, 7f, 0.1f, 0.25f, 0f);
@@ -233,7 +289,11 @@ namespace Relict
             if (dying)
             {
                 deathT += dt;
-                if (deathT > 0.5f) Destroy(gameObject);
+                if (anim == null) body.localRotation = Quaternion.Euler(0, 0, Mathf.Min(deathT * 400f, 175f));
+                knock = Vector3.MoveTowards(knock, Vector3.zero, 10f * dt);
+                transform.position += knock * dt;
+                if (deathT > 2.4f) transform.position += Vector3.down * dt * 0.7f;
+                if (deathT > 4f) Destroy(gameObject);
                 return;
             }
 
@@ -295,8 +355,14 @@ namespace Relict
             knock = Vector3.MoveTowards(knock, Vector3.zero, 15f * dt);
             cc.Move((move + knock + Vector3.up * yVel) * dt);
 
-            // procedural legs and body
+            // animation
             float sp = move.magnitude;
+            if (anim && !attacking)
+            {
+                if (sp > 0.3f) { PlayAnim("Walk"); anim.speed = Mathf.Clamp(sp / walkRef, 0.5f, 2.4f); }
+                else { PlayAnim("Idle", 0.25f); anim.speed = 1f; }
+            }
+            // procedural legs and body (primitive fallback)
             float k = Mathf.Clamp01(sp / speed);
             phase += dt * (sp * (boss ? 1.6f : 3.2f) + 0.6f);
             for (int i = 0; i < legs.Count; i++)
@@ -333,6 +399,12 @@ namespace Relict
             attacking = true;
             atkReady = Time.time + cooldown;
             float wind = boss ? 0.55f : mini ? 0.7f : kind == InsectKind.Beetle ? 0.45f : 0.32f;
+            if (anim)
+            {
+                animState = "Attack";
+                anim.CrossFadeInFixedTime("Attack", 0.06f, 0, 0f);
+                anim.speed = Mathf.Clamp(0.6f * attackLen / Mathf.Max(0.1f, wind + 0.05f), 0.5f, 3f);
+            }
             if (mini || boss) Telegraph(transform.position, mini ? range + 1.6f : range + 0.5f, wind);
             else if (kind == InsectKind.Beetle) Telegraph(transform.position + transform.forward * range * 0.6f, range * 0.75f, wind);
             for (float t = 0; t < wind; t += Time.deltaTime) { lunge = -0.15f * (t / wind); body.localScale = Vector3.one * (1f + 0.1f * (t / wind)); yield return null; }
@@ -366,6 +438,7 @@ namespace Relict
             for (float t = 0; t < 0.25f; t += Time.deltaTime) { lunge = Mathf.Lerp(0.45f, 0f, t / 0.25f); yield return null; }
             lunge = 0f;
             attacking = false;
+            if (anim) { animState = null; anim.speed = 1f; }
         }
     }
 
