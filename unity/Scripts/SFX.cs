@@ -3,7 +3,7 @@ using UnityEngine;
 
 namespace Relict
 {
-    public enum Sfx { BowDraw, BowRelease, BowFull, ArrowHit, ArrowCrit, ArrowWood, Kill, Swoosh, MeleeHit, Hurt, LevelUp, Coin, Artifact, Leap, Buy, Click }
+    public enum Sfx { BowDraw, BowRelease, BowFull, ArrowHit, ArrowCrit, ArrowWood, Kill, Swoosh, MeleeHit, Hurt, LevelUp, Coin, Artifact, Leap, Buy, Click, Splat, Multi }
 
     // Procedurally synthesised sound effects: no audio assets needed.
     public static class SFX
@@ -142,6 +142,23 @@ namespace Relict
                         float f = t < 0.08f ? 784f : 1175f;
                         phase += 2 * Mathf.PI * f / Rate;
                         return Mathf.Sin(phase) * Env(t < 0.08f ? t : t - 0.08f, 0.003f, 0.07f) * 0.3f;
+                    });
+                case Sfx.Splat:
+                    return Make("splat", 0.35f, t =>
+                    {
+                        lp += (Noise() - lp) * (0.5f - t);
+                        phase += 2 * Mathf.PI * (90f - 120f * t) / Rate;
+                        return (lp * 1.1f + Mathf.Sin(phase) * 0.6f) * Env(t, 0.003f, 0.09f) * (1f + 0.5f * Mathf.Sin(t * 260f));
+                    });
+                case Sfx.Multi:
+                    return Make("multi", 0.6f, t =>
+                    {
+                        int step = Mathf.Min(2, (int)(t / 0.07f));
+                        float[] notes = { 784f, 988f, 1319f };
+                        phase += 2 * Mathf.PI * notes[step] / Rate;
+                        phase2 += 2 * Mathf.PI * notes[step] * 1.5f / Rate;
+                        float tt = t - step * 0.07f;
+                        return (Mathf.Sin(phase) + 0.4f * Mathf.Sin(phase2)) * Env(tt, 0.003f, step == 2 ? 0.25f : 0.06f) * 0.35f;
                     });
                 default:
                     return Make("click", 0.05f, t =>

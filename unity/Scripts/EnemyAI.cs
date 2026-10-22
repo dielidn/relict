@@ -174,17 +174,41 @@ namespace Relict
             {
                 dying = true;
                 cc.enabled = false;
-                VFX.Burst(transform.position + Vector3.up * 0.7f, new Color(0.6f, 1f, 0.3f), boss ? 80 : 25, boss ? 7f : 4f, boss ? 0.4f : 0.18f);
                 if (MatchManager.I) MatchManager.I.OnInsectKilled(this, k);
+                Explode(k);
             };
             chargeReady = Time.time + 5f;
         }
 
+        Renderer[] bodyRenderers;
         IEnumerator Flash()
         {
-            body.localScale = Vector3.one * 1.08f;
-            yield return new WaitForSeconds(0.08f);
+            if (bodyRenderers == null) bodyRenderers = body.GetComponentsInChildren<Renderer>();
+            Juice.Tint(bodyRenderers, new Color(1f, 1f, 1f));
+            body.localScale = Vector3.one * 1.1f;
+            yield return new WaitForSeconds(0.06f);
+            if (dying) yield break;
+            Juice.Tint(bodyRenderers, null);
             body.localScale = Vector3.one;
+        }
+
+        public Color GooColor => kind == InsectKind.Ant ? new Color(0.75f, 0.85f, 0.2f) : kind == InsectKind.Mantis ? new Color(0.55f, 1f, 0.3f) : kind == InsectKind.Colossus ? new Color(1f, 0.55f, 0.15f) : new Color(0.3f, 0.95f, 0.45f);
+
+        void Explode(Health killer)
+        {
+            float size = boss ? 3f : mini ? 2.4f : kind == InsectKind.Beetle ? 1.5f : 1f;
+            Vector3 c = transform.position + Vector3.up * (0.6f * size);
+            Vector3 push = Vector3.zero;
+            if (killer != null) { push = transform.position - killer.transform.position; push.y = 0; push = push.normalized * 3f; }
+            push += knock * 0.5f;
+            Juice.Shatter(body, c, push, 5f + size * 1.5f, boss ? 60 : 40);
+            var goo = GooColor;
+            VFX.Burst(c, goo, Mathf.RoundToInt(30 * size), 5f + size, 0.18f + 0.06f * size, 0.7f, 1.2f);
+            VFX.Burst(c, Color.white, 10, 7f, 0.1f, 0.25f, 0f);
+            Juice.Splat(transform.position, goo, 0.7f * size);
+            Juice.LightFlash(c, Color.Lerp(goo, Color.white, 0.4f), 5f * size, 4f + 3f * size, 0.35f);
+            SFX.Play(Sfx.Splat, Mathf.Clamp01(0.6f + 0.15f * size), 0.12f, transform.position);
+            if (boss || mini) VFX.Ring(transform.position + Vector3.up * 0.2f, goo);
         }
 
         public void Knock(Vector3 v) { knock += v * (boss ? 0.15f : mini ? 0.2f : kind == InsectKind.Beetle ? 0.5f : 1f); }
@@ -209,9 +233,7 @@ namespace Relict
             if (dying)
             {
                 deathT += dt;
-                body.localRotation = Quaternion.Euler(0, 0, Mathf.Min(deathT * 400f, 175f));
-                if (deathT > 1.5f) transform.position += Vector3.down * dt * 0.5f;
-                if (deathT > 4f) Destroy(gameObject);
+                if (deathT > 0.5f) Destroy(gameObject);
                 return;
             }
 

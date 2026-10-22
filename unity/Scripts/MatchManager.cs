@@ -145,14 +145,17 @@ namespace Relict
         }
 
         bool stopping;
+        Coroutine timeCo;
         public void HitStop(float seconds)
         {
-            if (!stopping && state == State.Playing) StartCoroutine(HitStopCo(seconds));
+            if (!stopping && state == State.Playing) timeCo = StartCoroutine(HitStopCo(seconds));
         }
 
         public void SlowMo(float seconds, float scale)
         {
-            if (!stopping && state == State.Playing) StartCoroutine(SlowMoCo(seconds, scale));
+            if (state != State.Playing) return;
+            if (timeCo != null) StopCoroutine(timeCo);
+            timeCo = StartCoroutine(SlowMoCo(seconds, scale));
         }
 
         IEnumerator SlowMoCo(float seconds, float scale)
@@ -162,6 +165,7 @@ namespace Relict
             yield return new WaitForSecondsRealtime(seconds);
             if (state == State.Playing) Time.timeScale = 1f;
             stopping = false;
+            timeCo = null;
         }
 
         string bannerTitle, bannerSub;
@@ -414,6 +418,16 @@ namespace Relict
                 AddXp(e.xp);
                 HitMarker(false, true);
                 SFX.Play(Sfx.Kill, 0.7f, 0.03f);
+                FloatText(e.transform.position + Vector3.up * 2.6f, "+" + e.xp + " опыта", new Color(0.55f, 0.8f, 1f));
+                Juice.XpOrbs(e.transform.position + Vector3.up, Mathf.Clamp(e.xp / 10, 2, 14));
+                RegisterStreak();
+                var tpc = Camera.main.GetComponent<ThirdPersonCamera>();
+                if (tpc) { tpc.Punch(e.boss || e.mini ? 0.14f : 0.05f); tpc.Shake(e.boss || e.mini ? 0.6f : 0.12f); }
+            }
+            if (e.mini && byHero)
+            {
+                SlowMo(0.8f, 0.25f);
+                Banner("ЖУК-КОЛОСС ПОВЕРЖЕН", "Панцирь Колосса упал рядом");
             }
             if (byRival) Rival.AddXp(e.xp);
             if (e.boss)
@@ -423,6 +437,8 @@ namespace Relict
                     heart = true;
                     Hero.Hp.SetMax(Hero.Hp.max + 60f); Hero.Hp.Heal(Hero.Hp.max);
                     Toast("Сердце Реликта ваше: +30% урона, +60 здоровья!");
+                    Banner("БОГОМОЛ-СТРАЖ ПОВЕРЖЕН", "Сердце Реликта: +30% урона, +60 здоровья");
+                    SlowMo(1.2f, 0.2f);
                     SFX.Play(Sfx.Artifact, 1f, 0f);
                 }
                 else if (byRival)
@@ -441,7 +457,15 @@ namespace Relict
             for (int i = 0; i < coins; i++) Pickup.Gold(r.transform.position, Mathf.Max(5, (r.gold + 80) / coins));
             for (int i = 0; i < r.artifacts.Count; i++)
                 Pickup.Artifact(r.transform.position + Random.insideUnitSphere.Flat() * 1.5f, r.artifacts[i], r.artifactValues[i], RandomModel(artifactModels));
-            if (killer != null && Hero != null && killer == Hero.Hp) { kills++; AddXp(150); HitMarker(false, true); SFX.Play(Sfx.Kill, 0.9f, 0f); HitStop(0.08f); }
+            if (killer != null && Hero != null && killer == Hero.Hp) { kills++; AddXp(150); HitMarker(false, true); SFX.Play(Sfx.Kill, 0.9f, 0f); }
+            SlowMo(1.4f, 0.2f);
+            Banner("СОПЕРНИК ПОВЕРЖЕН", "вы — последний выживший");
+            var rc = r.transform.position + Vector3.up;
+            VFX.Burst(rc, new Color(1f, 0.4f, 0.3f), 60, 8f, 0.25f, 0.9f, 0.8f);
+            VFX.Ring(r.transform.position + Vector3.up * 0.2f, new Color(1f, 0.5f, 0.35f));
+            Juice.LightFlash(rc, new Color(1f, 0.6f, 0.4f), 10f, 12f, 0.6f);
+            var ctp = Camera.main.GetComponent<ThirdPersonCamera>();
+            if (ctp) { ctp.Punch(0.18f); ctp.Shake(0.8f); }
             Toast(r.Hp.displayName + " повержен!");
             StartCoroutine(EndAfter(2.5f, true, "Соперник повержен. Вы — последний выживший!"));
         }
@@ -538,6 +562,28 @@ namespace Relict
                 t = 0f,
                 col = toPlayer ? new Color(1f, 0.35f, 0.3f) : crit ? new Color(1f, 0.6f, 0.15f) : new Color(1f, 0.92f, 0.6f)
             });
+        }
+
+        int streak;
+        float lastKillT = -99f;
+        static readonly string[] StreakNames = { "", "", "ДВОЙНОЕ УБИЙСТВО", "ТРОЙНОЕ УБИЙСТВО", "РЕЗНЯ" };
+
+        void RegisterStreak()
+        {
+            streak = Time.time - lastKillT < 2.8f ? streak + 1 : 1;
+            lastKillT = Time.time;
+            if (streak < 2) return;
+            int bonus = 5 * streak;
+            gold += bonus;
+            string title = streak < StreakNames.Length ? StreakNames[streak] : "НЕУДЕРЖИМ ×" + streak;
+            Banner(title, "+" + bonus + " золота за серию");
+            SFX.Play(Sfx.Multi, 0.8f, 0f);
+            if (streak >= 3) HitStop(0.05f);
+        }
+
+        public void FloatText(Vector3 pos, string text, Color col)
+        {
+            floaters.Add(new Floater { pos = pos, text = text, crit = false, t = 0f, col = col });
         }
 
         public void Toast(string s)

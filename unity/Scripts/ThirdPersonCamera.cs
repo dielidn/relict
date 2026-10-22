@@ -32,6 +32,10 @@ namespace Relict
         // Recoil: pushes the view up a little, recovers on its own.
         public void Kick(float degrees) { kick += degrees; }
 
+        // Quick zoom-in punch (kills).
+        public void Punch(float amount) { punch = Mathf.Max(punch, amount); }
+        float punch;
+
         void LateUpdate()
         {
             float dt = Time.unscaledDeltaTime;
@@ -54,7 +58,8 @@ namespace Relict
 
             kick = Mathf.Lerp(kick, 0f, 1f - Mathf.Exp(-12f * dt));
             if (cam == null) cam = GetComponent<Camera>();
-            float wantZoom = (aiming ? 0.72f : 1f) * (1f - 0.08f * charge);
+            punch = Mathf.MoveTowards(punch, 0f, dt * 0.6f);
+            float wantZoom = (aiming ? 0.72f : 1f) * (1f - 0.08f * charge) * (1f - punch);
             zoom = Mathf.Lerp(zoom, wantZoom, 1f - Mathf.Exp(-10f * dt));
             if (cam) cam.fieldOfView = GameSettings.Fov * zoom;
 

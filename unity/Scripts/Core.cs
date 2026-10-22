@@ -204,4 +204,175 @@ namespace Relict
             if (t > 3f) Destroy(gameObject);
         }
     }
+
+    // ---------- kill juice ----------
+    public static class Juice
+    {
+        static readonly MaterialPropertyBlock mpb = new MaterialPropertyBlock();
+
+        // Tint renderers (white hit flash); pass null to clear.
+        public static void Tint(Renderer[] rs, Color? c)
+        {
+            foreach (var r in rs)
+            {
+                if (r == null) continue;
+                if (c == null) { r.SetPropertyBlock(null); continue; }
+                r.GetPropertyBlock(mpb);
+                mpb.SetColor("_BaseColor", c.Value);
+                mpb.SetColor("_EmissionColor", c.Value * 0.6f);
+                r.SetPropertyBlock(mpb);
+            }
+        }
+
+        // Breaks a body built from primitives into flying, bouncing pieces.
+        public static void Shatter(Transform body, Vector3 center, Vector3 push, float power, int maxPieces = 40)
+        {
+            var rs = body.GetComponentsInChildren<Renderer>();
+            int n = 0;
+            foreach (var r in rs)
+            {
+                if (n++ >= maxPieces) { r.enabled = false; continue; }
+                var t = r.transform;
+                t.SetParent(null, true);
+                var g = t.gameObject.AddComponent<Gib>();
+                Vector3 dir = (t.position - center); dir.y = Mathf.Abs(dir.y) + 0.3f;
+                dir = dir.sqrMagnitude > 0.001f ? dir.normalized : Random.onUnitSphere;
+                g.Init(dir * Random.Range(0.6f, 1.2f) * power + push + Vector3.up * Random.Range(2f, 4.5f) * (power / 5f),
+                       Random.insideUnitSphere * Random.Range(360f, 900f), Random.Range(1.6f, 2.6f));
+            }
+        }
+
+        public static void Splat(Vector3 pos, Color color, float size)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                var p = pos + new Vector3(Random.Range(-0.6f, 0.6f), 0, Random.Range(-0.6f, 0.6f)) * size * (i == 0 ? 0f : 1f);
+                p.y = LGeo.Ground(p) + 0.03f + i * 0.004f;
+                var go = new GameObject("Splat");
+                go.transform.position = p;
+                float sc = size * (i == 0 ? 1f : Random.Range(0.3f, 0.55f));
+                Art.Part(go.transform, PrimitiveType.Cylinder, Vector3.zero, new Vector3(sc * Random.Range(1.6f, 2.2f), 0.004f, sc * Random.Range(1.3f, 1.9f)),
+                    Art.Lit(color * 0.7f, 0.85f, 0f, color * 0.25f), new Vector3(0, Random.Range(0, 360f), 0)).GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                go.AddComponent<Fader>().Init(7f, 1.5f);
+            }
+        }
+
+        public static void LightFlash(Vector3 pos, Color c, float intensity, float range, float time)
+        {
+            var l = new GameObject("Flash").AddComponent<Light>();
+            l.type = LightType.Point; l.color = c; l.intensity = intensity; l.range = range;
+            l.transform.position = pos;
+            l.gameObject.AddComponent<LightFade>().Init(time);
+        }
+
+        public static void XpOrbs(Vector3 from, int count)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                var go = new GameObject("XpOrb");
+                go.transform.position = from + Random.insideUnitSphere * 0.4f;
+                Art.Part(go.transform, PrimitiveType.Sphere, Vector3.zero, Vector3.one * 0.16f, Art.Lit(new Color(0.4f, 0.7f, 1f), 0.9f, 0f, new Color(0.6f, 1.2f, 2.4f)));
+                var tr = go.AddComponent<TrailRenderer>();
+                tr.time = 0.25f; tr.startWidth = 0.12f; tr.endWidth = 0f;
+                tr.sharedMaterial = Art.Additive(new Color(0.5f, 0.8f, 1f));
+                tr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                go.AddComponent<XpOrb>().Init(Random.onUnitSphere * 4f + Vector3.up * 5f, 0.25f + i * 0.04f);
+            }
+        }
+    }
+
+    public class Gib : MonoBehaviour
+    {
+        Vector3 vel, spin, baseScale;
+        float life, t;
+        Renderer r;
+        Color baseColor;
+        static readonly MaterialPropertyBlock mpb = new MaterialPropertyBlock();
+
+        public void Init(Vector3 v, Vector3 angular, float lifetime)
+        {
+            vel = v; spin = angular; life = lifetime; baseScale = transform.localScale;
+            r = GetComponent<Renderer>();
+            if (r && r.sharedMaterial && r.sharedMaterial.HasProperty("_BaseColor")) baseColor = r.sharedMaterial.GetColor("_BaseColor");
+        }
+
+        void Update()
+        {
+            float dt = Time.deltaTime;
+            t += dt;
+            vel += Vector3.down * 18f * dt;
+            var p = transform.position + vel * dt;
+            float g = LGeo.Ground(p) + 0.05f;
+            if (p.y < g)
+            {
+                p.y = g;
+                if (vel.y < 0f) vel.y = -vel.y * 0.35f;
+                vel.x *= 0.6f; vel.z *= 0.6f; spin *= 0.6f;
+            }
+            transform.position = p;
+            transform.Rotate(spin * dt, Space.World);
+            if (r && t < 0.15f)
+            {
+                r.GetPropertyBlock(mpb);
+                mpb.SetColor("_BaseColor", Color.Lerp(Color.white, baseColor, t / 0.15f));
+                r.SetPropertyBlock(mpb);
+            }
+            else if (r && t < 0.2f) r.SetPropertyBlock(null);
+            if (t > life - 0.5f) transform.localScale = baseScale * Mathf.Clamp01((life - t) / 0.5f);
+            if (t > life) Destroy(gameObject);
+        }
+    }
+
+    public class Fader : MonoBehaviour
+    {
+        float hold, fade, t; Vector3 s0;
+        public void Init(float holdTime, float fadeTime) { hold = holdTime; fade = fadeTime; s0 = transform.localScale; }
+        void Update()
+        {
+            t += Time.deltaTime;
+            if (t > hold) transform.localScale = s0 * Mathf.Clamp01(1f - (t - hold) / fade);
+            if (t > hold + fade) Destroy(gameObject);
+        }
+    }
+
+    public class LightFade : MonoBehaviour
+    {
+        Light l; float time, t, i0;
+        public void Init(float duration) { l = GetComponent<Light>(); time = duration; i0 = l.intensity; }
+        void Update()
+        {
+            t += Time.deltaTime;
+            l.intensity = i0 * Mathf.Clamp01(1f - t / time);
+            if (t > time) Destroy(gameObject);
+        }
+    }
+
+    public class XpOrb : MonoBehaviour
+    {
+        Vector3 vel; float delay, t;
+        public void Init(Vector3 v, float wait) { vel = v; delay = wait; }
+        void Update()
+        {
+            float dt = Time.deltaTime;
+            t += dt;
+            var mm = MatchManager.I;
+            if (mm == null || mm.Hero == null) { Destroy(gameObject); return; }
+            Vector3 target = mm.Hero.transform.position + Vector3.up * 1.1f;
+            if (t < delay) vel = Vector3.Lerp(vel, Vector3.zero, dt * 3f);
+            else
+            {
+                Vector3 d = target - transform.position;
+                vel = Vector3.Lerp(vel, d.normalized * (12f + t * 20f), dt * 6f);
+                if (d.magnitude < 0.5f)
+                {
+                    VFX.Burst(target, new Color(0.5f, 0.8f, 1f), 4, 1.5f, 0.06f, 0.25f, 0f);
+                    SFX.Play(Sfx.Coin, 0.25f, 0.15f);
+                    Destroy(gameObject);
+                    return;
+                }
+            }
+            transform.position += vel * dt;
+            if (t > 4f) Destroy(gameObject);
+        }
+    }
 }
