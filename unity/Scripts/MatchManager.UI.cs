@@ -224,7 +224,9 @@ namespace Relict
             Coin(new Rect(cx + 94 * s, cy + 56 * s, 16 * s, 16 * s));
             Txt(new Rect(cx + 118 * s, cy + 50 * s, 200 * s, 28 * s), Bank + " <color=#9AA894>в казне</color>", St('b', 18f), CGold);
             if (Button(new Rect(cx + cw - 128 * s, cy + 24 * s, 110 * s, 44 * s), "Ник", Btn.Ghost, true, 17f)) { nickPrompt = true; nickDraft = GameSettings.Nick; }
-            if (Button(new Rect(cx, cy + 108 * s, cw, 52 * s), "Настройки", Btn.Secondary, true, 19f)) settingsOpen = true;
+            float hb = (cw - 12 * s) * 0.5f;
+            if (Button(new Rect(cx, cy + 108 * s, hb, 52 * s), "Настройки", Btn.Secondary, true, 19f)) settingsOpen = true;
+            if (Button(new Rect(cx + hb + 12 * s, cy + 108 * s, hb, 52 * s), "Выйти из игры", Btn.Danger, true, 19f)) QuitGame();
 
             // leaderboard (left)
             var lb = new Rect(56 * s, 200 * s, 420 * s, 470 * s);
@@ -772,7 +774,7 @@ namespace Relict
             float s = S;
             GUI.enabled = !settingsOpen;
             Dim(0.6f);
-            float w = 440 * s, h = 380 * s;
+            float w = 440 * s, h = 442 * s;
             var r = new Rect((Screen.width - w) * 0.5f, (Screen.height - h) * 0.5f, w, h);
             Card(r, 22f);
             Caption(new Rect(r.x, r.y + 34 * s, w, 22 * s), "Вылазка приостановлена");
@@ -782,6 +784,17 @@ namespace Relict
             if (Button(new Rect(bx, r.y + 206 * s, bw, 50 * s), "Настройки")) settingsOpen = true;
             if (Button(new Rect(bx, r.y + 268 * s, bw, 50 * s), "Сдаться и в лагерь", Btn.Danger))
             { Time.timeScale = 1f; End(false, "Вы покинули вылазку."); }
+            if (Button(new Rect(bx, r.y + 330 * s, bw, 50 * s), "Выйти из игры", Btn.Ghost)) QuitGame();
+        }
+
+        void QuitGame()
+        {
+            PlayerPrefs.Save();
+#if UNITY_EDITOR
+            UnityEditor.EditorApplication.isPlaying = false;
+#else
+            Application.Quit();
+#endif
         }
 
         // ---------- results ----------
