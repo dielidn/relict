@@ -85,6 +85,9 @@ namespace Relict
                 urp.shadowDistance = q == 0 ? 70f : q == 1 ? 45f : 30f;
                 urp.shadowCascadeCount = q == 0 ? 3 : q == 1 ? 2 : 1;
             }
+            // baked shadows beyond the realtime shadow distance; low quality uses baked shadows for statics only
+            QualitySettings.shadowmaskMode = q == 2 ? ShadowmaskMode.Shadowmask : ShadowmaskMode.DistanceShadowmask;
+            MistField.Density = q == 0 ? 1f : q == 1 ? 0.75f : 0.5f;
             FoliageScatter.Density = q == 0 ? 1f : q == 1 ? 0.7f : 0.45f;
             FoliageScatter.DistanceMul = q == 0 ? 1f : q == 1 ? 0.8f : 0.6f;
             if (!Mathf.Approximately(lastDensity, FoliageScatter.Density))
