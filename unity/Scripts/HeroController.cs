@@ -34,6 +34,16 @@ namespace Relict
         bool leaping, leftGround, flip, charging, fullPlayed, sliding, plunging;
         string cur;
         Light armorLight;
+
+        // animation feel: sliced jump states, bow upper-body layer, procedural squash / lean / flip
+        Transform model;
+        Vector3 modelBasePos, modelBaseScale = Vector3.one;
+        Quaternion modelBaseRot = Quaternion.identity;
+        float squash, squashVel, lean, flipT = -1f, jumpT = -9f, landUntil, releaseUntil, upperW;
+        bool hasJumpStates, hasUpper, wasGrounded = true;
+        string upperState = "";
+        const float DrawClipLen = 1.55f;
+        static readonly int UpperSpeedId = Animator.StringToHash("UpperSpeed");
         readonly HashSet<Health> slideHit = new HashSet<Health>();
 
         // Simulated input for automated play-tests (added on top of real input).
@@ -59,6 +69,13 @@ namespace Relict
             anim = GetComponentInChildren<Animator>();
             hp.Init(Team.Player, maxHp, kind == HeroKind.Frog ? "Лягушка" : "Геккон");
             dodgeMeter = dodgeCharges;
+            if (anim != null)
+            {
+                model = anim.transform;
+                modelBasePos = model.localPosition; modelBaseRot = model.localRotation; modelBaseScale = model.localScale;
+                hasJumpStates = anim.HasState(0, Animator.StringToHash("JumpUp"));
+                hasUpper = anim.layerCount > 1 && anim.HasState(1, Animator.StringToHash("Draw"));
+            }
         }
 
         void Start()
@@ -180,7 +197,7 @@ namespace Relict
                 {
                     yVel = Mathf.Sqrt(2f * jumpHeight * -gravity);
                     coyote = 0f; jumpBuffer = 0f;
-                    Restart("Jump", 0.08f);
+                    JumpAnim(false);
                 }
                 else if (airJumps > 0 && !grounded)
                 {
@@ -188,15 +205,24 @@ namespace Relict
                     yVel = Mathf.Sqrt(2f * jumpHeight * 0.85f * -gravity);
                     jumpBuffer = 0f;
                     if (wish.sqrMagnitude > 0.01f) vel = wish * Mathf.Max(spd, new Vector3(vel.x, 0, vel.z).magnitude);
-                    Restart("Jump", 0.05f);
+                    JumpAnim(true);
                     VFX.Burst(transform.position + Vector3.up * 0.2f, new Color(0.8f, 1f, 0.8f), 14, 2.5f, 0.12f, 0.35f, 0f, true);
                     SFX.Play(Sfx.Swoosh, 0.5f, 0.2f);
                 }
             }
 
-            yVel += gravity * dt * (plunging ? 2.2f : 1f);
+            // snappier arc: fall faster than you rise, release Space early for a short hop
+            bool jumpHeld = (kb != null && kb.spaceKey.isPressed) || Time.time - jumpT < 0.12f;
+            float g = gravity;
+            if (plunging) g *= 2.2f;
+            else if (yVel < 0f) g *= 1.45f;
+            else if (!jumpHeld && !leaping) g *= 1.9f;
+            yVel += g * dt;
             knock = Vector3.MoveTowards(knock, Vector3.zero, 18f * dt);
+            float fallSpeed = -yVel;
             cc.Move((vel + knock + Vector3.up * yVel) * dt);
+            if (cc.isGrounded && !wasGrounded && airTime > 0.22f) Land(fallSpeed, rolling);
+            wasGrounded = cc.isGrounded;
             airTime = cc.isGrounded ? 0f : airTime + dt;
 
             if (leaping)
@@ -244,6 +270,7 @@ namespace Relict
             }
 
             if ((!active || rolling) && charging) charging = false;
+            UpdateUpperLayer(dt);
             if (tpc) tpc.charge = Charge01;
             hp.armor = rolling ? 1f : ArmorOn ? 0.7f : 0f;
             if (armorLight) armorLight.enabled = ArmorOn;
@@ -252,8 +279,18 @@ namespace Relict
             if (anim == null) return;
             if (hp.Dead) { anim.speed = 0.5f; Play("Idle", 0.3f); return; }
             float hs = new Vector3(vel.x, 0, vel.z).magnitude;
-            if (leaping || rolling || charging || plunging || Time.time < lockUntil) { }
-            else if (airTime > 0.2f) { anim.speed = 1f; Play("Jump", 0.1f); }
+            bool airborne = !cc.isGrounded && (airTime > 0.15f || Time.time - jumpT < 0.3f);
+            if (leaping || rolling || plunging || (charging && !hasUpper) || (Time.time < lockUntil && !(kind == HeroKind.Gecko && hasUpper)) || Time.time < landUntil) { }
+            else if (airborne)
+            {
+                if (!hasJumpStates) { anim.speed = 1f; Play("Jump", 0.1f); }
+                else if (cur == "JumpUp")
+                {
+                    var st = anim.IsInTransition(0) ? anim.GetNextAnimatorStateInfo(0) : anim.GetCurrentAnimatorStateInfo(0);
+                    if (st.normalizedTime >= 0.95f) { anim.speed = 1f; Play("JumpAir", 0.15f); }
+                }
+                else { anim.speed = 1f; Play("JumpAir", 0.2f); }
+            }
             else if (hs > 0.4f)
             {
                 bool run = hs > walkSpeed * speedMul + 0.4f;
@@ -261,6 +298,87 @@ namespace Relict
                 anim.speed = Mathf.Clamp(hs / ((run ? runSpeed : walkSpeed) * speedMul), 0.75f, 1.35f);
             }
             else { anim.speed = 1f; Play("Idle", 0.2f); }
+        }
+
+        // ---------- jump feel ----------
+        void JumpAnim(bool doubleJump)
+        {
+            jumpT = Time.time;
+            landUntil = 0f;
+            squash = doubleJump ? 0.1f : 0.18f; squashVel = 0f;     // stretch on take-off
+            if (doubleJump) flipT = 0f;                              // front flip on the second jump
+            if (anim == null) return;
+            if (hasJumpStates) { Restart("JumpUp", 0.06f); anim.speed = doubleJump ? 1.5f : 1.2f; }
+            else Restart("Jump", 0.08f);
+        }
+
+        void Land(float impact, bool rolling)
+        {
+            impact = Mathf.Max(0f, impact);
+            squash = -Mathf.Clamp(impact / 14f * 0.2f, 0.06f, 0.24f); squashVel = 0f;
+            flipT = -1f;
+            float hs = new Vector3(vel.x, 0, vel.z).magnitude;
+            if (anim != null && hasJumpStates && !leaping && !plunging && !rolling && !hp.Dead)
+            {
+                bool moving = hs > 1.5f;
+                Restart("JumpLand", 0.06f);
+                anim.speed = moving ? 1.8f : 1.2f;
+                landUntil = Time.time + (moving ? 0.12f : 0.3f);
+            }
+            if (impact > 8f)
+            {
+                VFX.Burst(transform.position + Vector3.up * 0.1f, new Color(0.7f, 0.65f, 0.5f), impact > 13f ? 14 : 8, 2.4f, 0.16f, 0.45f, 0.2f, true);
+                SFX.Play(Sfx.Leap, Mathf.Clamp01(impact / 30f), 0.15f);
+                if (tpc) tpc.Shake(Mathf.Clamp(impact / 80f, 0.05f, 0.25f));
+            }
+        }
+
+        void LateUpdate()
+        {
+            if (model == null) return;
+            float dt = Time.deltaTime;
+            if (dt <= 0f) return;
+
+            // squash & stretch spring
+            squashVel += (-squash * 200f - squashVel * 15f) * dt;
+            squash += squashVel * dt;
+            float s = Mathf.Clamp(squash, -0.3f, 0.3f);
+            model.localScale = Vector3.Scale(modelBaseScale, new Vector3(1f - s * 0.5f, 1f + s, 1f - s * 0.5f));
+
+            // lean: forward with speed in the air, back while rising, forward while falling
+            float target = 0f;
+            if (!cc.isGrounded && !hp.Dead && Time.time >= rollUntil)
+            {
+                float fs = Vector3.Dot(new Vector3(vel.x, 0, vel.z), transform.forward);
+                target = Mathf.Clamp(fs * 1.4f, -6f, 9f) - Mathf.Clamp(yVel * 0.9f, -7f, 7f);
+            }
+            lean = Mathf.Lerp(lean, target, 1f - Mathf.Exp(-8f * dt));
+            Quaternion rot = Quaternion.Euler(lean, 0f, 0f);
+            if (flipT >= 0f)
+            {
+                flipT += dt / 0.42f;
+                if (flipT >= 1f) flipT = -1f;
+                else { float e = flipT * flipT * (3f - 2f * flipT); rot = rot * Quaternion.Euler(360f * e, 0f, 0f); }
+            }
+            Vector3 pivot = new Vector3(0f, 0.75f, 0f);
+            model.localRotation = modelBaseRot * rot;
+            model.localPosition = modelBasePos + pivot - rot * pivot;
+        }
+
+        // ---------- bow upper-body layer ----------
+        void UpdateUpperLayer(float dt)
+        {
+            if (!hasUpper || anim == null) return;
+            if (charging && upperState == "Draw" && Charge01 >= 1f)
+            {
+                anim.CrossFadeInFixedTime("Hold", 0.12f, 1);
+                upperState = "Hold";
+            }
+            float want = charging || Time.time < releaseUntil ? 1f : 0f;
+            upperW = Mathf.MoveTowards(upperW, want, dt * (want > upperW ? 12f : 4f));
+            anim.SetLayerWeight(1, upperW);
+            float spd = upperState == "Draw" ? DrawClipLen / ChargeTime : upperState == "Release" ? 2.4f : 1f;
+            anim.SetFloat(UpperSpeedId, spd / Mathf.Max(0.1f, anim.speed));
         }
 
         // ---------- dodge & slide ----------
@@ -392,8 +510,8 @@ namespace Relict
             charging = true;
             fullPlayed = false;
             chargeStart = Time.time;
-            Restart("Attack", 0.08f);
-            anim.speed = 0.3f;
+            if (hasUpper) { anim.CrossFadeInFixedTime("Draw", 0.1f, 1, 0f); upperState = "Draw"; }
+            else { Restart("Attack", 0.08f); anim.speed = 0.3f; }
             SFX.Play(Sfx.BowDraw, 0.5f, 0.05f);
         }
 
@@ -415,7 +533,8 @@ namespace Relict
             attackReady = Time.time + 0.18f / mm.AttackSpeedMul;
             lockUntil = Time.time + 0.18f;
             transform.rotation = Quaternion.LookRotation(fwd);
-            anim.speed = 2.5f;
+            if (hasUpper) { anim.CrossFadeInFixedTime("Release", 0.03f, 1, 0f); upperState = "Release"; releaseUntil = Time.time + 0.38f; }
+            else anim.speed = 2.5f;
             SFX.Play(Sfx.BowRelease, heavy ? 1f : 0.75f, 0.05f);
             if (tpc) { tpc.Kick(heavy ? 2.4f : 1.1f); tpc.Shake(heavy ? 0.12f : 0.04f); }
             VFX.Burst(origin + dir * 0.4f, crit ? new Color(1f, 0.7f, 0.3f) : new Color(1f, 0.9f, 0.6f), heavy || crit ? 10 : 4, 2f, 0.06f, 0.2f, 0f);
