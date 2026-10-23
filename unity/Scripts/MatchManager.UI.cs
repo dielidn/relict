@@ -573,9 +573,9 @@ namespace Relict
                 Caption(new Rect(card.x + 16 * s, py + 28 * s, 120 * s, 20 * s), bd ? "Босс ✕" : "Босс", CDanger);
                 if (!bd)
                 {
-                    float k = Mathf.Clamp01(boss.Hp.hp / boss.Hp.max);
+                    float bk = Mathf.Clamp01(boss.Hp.hp / boss.Hp.max);
                     RR(new Rect(card.x + 120 * s, py + 35 * s, 110 * s, 7 * s), new Color(1, 1, 1, 0.1f), 3 * s);
-                    RR(new Rect(card.x + 120 * s, py + 35 * s, 110 * s * k, 7 * s), CDanger, 3 * s);
+                    RR(new Rect(card.x + 120 * s, py + 35 * s, 110 * s * bk, 7 * s), CDanger, 3 * s);
                 }
                 return;
             }
