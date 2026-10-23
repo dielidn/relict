@@ -277,6 +277,15 @@ namespace Relict
             l.gameObject.AddComponent<LightFade>().Init(time);
         }
 
+        // A light that stays until destroyed by the caller (used for wind-up glows).
+        public static Light LightFlashHold(Vector3 pos, Color c, float range)
+        {
+            var l = new GameObject("Glow").AddComponent<Light>();
+            l.type = LightType.Point; l.color = c; l.intensity = 0f; l.range = range; l.shadows = LightShadows.None;
+            l.transform.position = pos;
+            return l;
+        }
+
         public static void XpOrbs(Vector3 from, int count)
         {
             for (int i = 0; i < count; i++)

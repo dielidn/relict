@@ -27,8 +27,10 @@ namespace Relict
         Transform armL, armR;
         public Health target;
         float atkReady, yVel, phase, retarget, wanderT, lunge, deathT, chargeReady, chargeUntil;
-        Vector3 knock, wander, chargeDir;
+        Vector3 knock, wander, chargeDir, extraVel;
         bool dying, attacking;
+        float throwReady, specialReady;
+        bool Enraged => boss && Hp.hp < Hp.max * 0.5f;
 
         public Health Hp => hp != null ? hp : (hp = GetComponent<Health>());
 
@@ -236,6 +238,8 @@ namespace Relict
                 Explode(k);
             };
             chargeReady = Time.time + 5f;
+            throwReady = Time.time + Random.Range(1f, 3f);
+            specialReady = Time.time + 2.5f;
         }
 
         Renderer[] bodyRenderers;
@@ -314,26 +318,14 @@ namespace Relict
                 float dist = d.magnitude;
                 var tcc = target.GetComponent<CharacterController>();
                 float reach = range + (tcc ? tcc.radius : 0.4f);
-                if (boss && Time.time < chargeUntil)
+                if (!attacking) Face(d, dt);
+                if (!attacking)
                 {
-                    move = chargeDir * speed * 3.2f;
-                    Combat.Melee(transform.position, chargeDir, 1.6f, 120f, damage * 2.2f * dt, hp, 6f);
-                }
-                else if (boss && Time.time >= chargeReady && dist > 6f && dist < 18f)
-                {
-                    chargeReady = Time.time + 9f;
-                    chargeDir = d / dist;
-                    chargeUntil = Time.time + 0.7f;
-                    MatchManager.I.Toast("Богомол бросается в атаку!");
-                }
-                else
-                {
-                    Face(d, dt);
-                    if (!attacking)
-                    {
-                        if (dist > reach * 0.85f) move = d / Mathf.Max(dist, 0.01f) * speed;
-                        else if (Time.time >= atkReady) StartCoroutine(Attack());
-                    }
+                    if (boss && Time.time >= specialReady && TryBossSpecial(dist)) { }
+                    else if (kind == InsectKind.Beetle && Time.time >= throwReady && dist > reach + 1.5f && dist < 15f && ClearShot(target))
+                        StartCoroutine(ThrowPebble());
+                    else if (dist > reach * 0.85f) move = d / Mathf.Max(dist, 0.01f) * speed;
+                    else if (Time.time >= atkReady) StartCoroutine(Attack());
                 }
             }
             else
@@ -353,7 +345,7 @@ namespace Relict
             if (cc.isGrounded && yVel < 0f) yVel = -2f;
             yVel -= 25f * dt;
             knock = Vector3.MoveTowards(knock, Vector3.zero, 15f * dt);
-            cc.Move((move + knock + Vector3.up * yVel) * dt);
+            cc.Move((move + knock + extraVel + Vector3.up * yVel) * dt);
 
             // animation
             float sp = move.magnitude;
@@ -383,15 +375,223 @@ namespace Relict
         }
 
         // Red ground marker that fills up during the wind-up: dodge before it completes.
-        static void Telegraph(Vector3 pos, float radius, float time)
+        static void Telegraph(Vector3 pos, float radius, float time) => Tele.Circle(pos, radius, time);
+
+        bool ClearShot(Health h)
         {
-            pos = LGeo.OnGround(pos) + Vector3.up * 0.06f;
-            var root = new GameObject("Telegraph");
-            root.transform.position = pos;
-            Art.Part(root.transform, PrimitiveType.Cylinder, Vector3.zero, new Vector3(radius * 2f, 0.01f, radius * 2f), Art.Additive(new Color(1f, 0.2f, 0.1f, 0.35f)));
-            var inner = Art.Part(root.transform, PrimitiveType.Cylinder, Vector3.up * 0.01f, new Vector3(0.1f, 0.012f, 0.1f), Art.Additive(new Color(1f, 0.35f, 0.15f, 0.55f)));
-            foreach (var r in root.GetComponentsInChildren<Renderer>()) r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            root.AddComponent<TelegraphFill>().Init(inner.transform, radius, time);
+            Vector3 a = transform.position + Vector3.up * 1.2f, b = h.transform.position + Vector3.up * 1.0f;
+            foreach (var hit in Physics.RaycastAll(a, (b - a).normalized, (b - a).magnitude, ~0, QueryTriggerInteraction.Ignore))
+                if (hit.collider.GetComponentInParent<Health>() == null) return false;
+            return true;
+        }
+
+        void AnimAttack(float windup)
+        {
+            if (!anim) return;
+            animState = "Attack";
+            anim.CrossFadeInFixedTime("Attack", 0.06f, 0, 0f);
+            anim.speed = Mathf.Clamp(0.6f * attackLen / Mathf.Max(0.1f, windup + 0.05f), 0.3f, 3f);
+        }
+
+        void EndAttack()
+        {
+            lunge = 0f;
+            body.localScale = Vector3.one;
+            extraVel = Vector3.zero;
+            attacking = false;
+            if (anim) { animState = null; anim.speed = 1f; }
+        }
+
+        Vector3 Lead(Health h, float time, float amount)
+        {
+            var tcc = h.GetComponent<CharacterController>();
+            Vector3 v = tcc ? tcc.velocity : Vector3.zero; v.y = 0;
+            return h.transform.position + v * time * amount;
+        }
+
+        // ---------- ladybug: lobbed pebbles ----------
+        IEnumerator ThrowPebble()
+        {
+            attacking = true;
+            throwReady = Time.time + Random.Range(2.6f, 3.8f);
+            atkReady = Mathf.Max(atkReady, Time.time + 0.6f);
+            float wind = 0.42f;
+            AnimAttack(wind);
+            for (float t = 0; t < wind; t += Time.deltaTime)
+            {
+                if (target != null) Face(target.transform.position - transform.position, Time.deltaTime, 12f);
+                lunge = -0.12f * (t / wind);
+                body.localScale = new Vector3(1f, 1f + 0.12f * (t / wind), 1f);
+                yield return null;
+            }
+            body.localScale = Vector3.one;
+            if (!dying && target != null && !target.Dead)
+            {
+                float dist = (target.transform.position - transform.position).magnitude;
+                float flight = Mathf.Clamp(dist / 13f, 0.55f, 1.0f);
+                Vector3 aim = LGeo.OnGround(Lead(target, flight, 0.7f) + (Vector3)(Random.insideUnitCircle * 0.5f));
+                Vector3 from = transform.position + Vector3.up * 1.1f + transform.forward * 0.7f;
+                Rock.Throw(from, aim, flight, damage * 0.55f, hp, 0.17f, 0.85f, false);
+                VFX.Burst(from, new Color(0.7f, 0.62f, 0.5f), 4, 1.5f, 0.12f, 0.3f, 0.3f);
+                SFX.Play(Sfx.Swoosh, 0.45f, 0.2f, transform.position);
+            }
+            for (float t = 0; t < 0.12f; t += Time.deltaTime) { lunge = Mathf.Lerp(-0.12f, 0.3f, t / 0.12f); yield return null; }
+            for (float t = 0; t < 0.3f; t += Time.deltaTime) { lunge = Mathf.Lerp(0.3f, 0f, t / 0.3f); yield return null; }
+            EndAttack();
+        }
+
+        // ---------- boss move set ----------
+        bool TryBossSpecial(float dist)
+        {
+            float r = Random.value;
+            if (dist < 5f)
+            {
+                if (r < 0.55f) StartCoroutine(BossSlam());
+                else return false;                                  // plain scythe swing
+            }
+            else if (dist < 17f) StartCoroutine(r < 0.5f ? BossLunge() : BossRocks());
+            else if (dist < 32f) StartCoroutine(BossRocks());
+            else return false;
+            specialReady = Time.time + (Enraged ? Random.Range(2.4f, 3.6f) : Random.Range(4f, 6f));
+            return true;
+        }
+
+        // 1) ground slam: big telegraphed circle, then a shockwave you have to jump over
+        IEnumerator BossSlam()
+        {
+            attacking = true;
+            atkReady = Time.time + cooldown;
+            float wind = Enraged ? 0.75f : 0.95f, R = 5.5f;
+            AnimAttack(wind);
+            Telegraph(transform.position, R, wind);
+            var glow = Juice.LightFlashHold(transform.position + Vector3.up * 2f, new Color(1f, 0.55f, 0.2f), 6f);
+            for (float t = 0; t < wind; t += Time.deltaTime)
+            {
+                float k = t / wind;
+                body.localScale = new Vector3(1f + 0.06f * k, 1f + 0.16f * k, 1f + 0.06f * k);
+                lunge = -0.25f * k;
+                if (glow) glow.intensity = 6f * k;
+                if (Random.value < 0.35f) VFX.Burst(transform.position + Random.insideUnitSphere.Flat() * R * 0.6f, new Color(0.62f, 0.54f, 0.42f), 1, 1f, 0.15f, 0.4f, -0.5f);
+                yield return null;
+            }
+            if (glow) Destroy(glow.gameObject);
+            body.localScale = new Vector3(1.1f, 0.85f, 1.1f);
+            if (!dying)
+            {
+                Vector3 p = transform.position + transform.forward * 1.2f;
+                var hit = new HashSet<Health>();
+                Tele.Blast(transform.position, R, damage * 1.5f, hp, 13f, 6f, hit);
+                Shockwave.Spawn(transform.position, 1.5f, 12f, 0.6f, damage * 0.6f, hp, new Color(1f, 0.6f, 0.25f, 0.9f), hit);
+                VFX.Ring(p, new Color(1f, 0.65f, 0.3f));
+                VFX.Burst(p + Vector3.up * 0.4f, new Color(0.62f, 0.54f, 0.42f), 50, 7f, 0.5f, 1.1f, 0.6f);
+                VFX.Burst(p + Vector3.up * 0.2f, new Color(1f, 0.55f, 0.2f), 30, 9f, 0.16f, 0.5f, 1.2f);
+                Juice.Splat(p, new Color(0.15f, 0.11f, 0.08f), 2.6f);
+                Juice.LightFlash(p + Vector3.up, new Color(1f, 0.6f, 0.25f), 12f, 14f, 0.5f);
+                SFX.Play(Sfx.Leap, 1f, 0.05f, p);
+                SFX.Play(Sfx.Splat, 0.6f, 0.1f, p);
+                Tele.Shake(p, 0.8f, 26f);
+                // rubble thrown out of the crater
+                for (int i = 0; i < 6; i++)
+                {
+                    var off = Random.insideUnitCircle.normalized * Random.Range(4f, 9f);
+                    Rock.Throw(p + Vector3.up * 0.8f, LGeo.OnGround(p + new Vector3(off.x, 0, off.y)), Random.Range(0.55f, 0.8f), damage * 0.3f, hp, 0.2f, 0.9f, false);
+                }
+            }
+            for (float t = 0; t < 0.2f; t += Time.deltaTime) { body.localScale = Vector3.Lerp(new Vector3(1.1f, 0.85f, 1.1f), Vector3.one, t / 0.2f); yield return null; }
+            yield return new WaitForSeconds(Enraged ? 0.4f : 0.65f);   // recovery: punish window
+            EndAttack();
+        }
+
+        // 2) rock barrage: a volley of burning boulders, each with its own landing marker
+        IEnumerator BossRocks()
+        {
+            attacking = true;
+            atkReady = Time.time + cooldown;
+            float wind = 0.55f;
+            AnimAttack(wind);
+            for (float t = 0; t < wind; t += Time.deltaTime)
+            {
+                if (target != null) Face(target.transform.position - transform.position, Time.deltaTime, 10f);
+                lunge = -0.2f * (t / wind);
+                yield return null;
+            }
+            int n = Enraged ? 7 : 5;
+            for (int i = 0; i < n && !dying; i++)
+            {
+                if (target == null || target.Dead) break;
+                Face(target.transform.position - transform.position, 1f, 50f);
+                float flight = Random.Range(1.0f, 1.2f);
+                Vector3 aim = Lead(target, flight, 0.6f);
+                if (i > 0) { var o = Random.insideUnitCircle * 2.8f; aim += new Vector3(o.x, 0, o.y); }
+                aim = LGeo.OnGround(aim);
+                Vector3 from = transform.position + Vector3.up * 3.4f + transform.forward * 1.2f;
+                Rock.Throw(from, aim, flight, damage * 0.7f, hp, 0.5f, 1.8f, true, true);
+                VFX.Burst(from, new Color(1f, 0.55f, 0.2f), 8, 3f, 0.18f, 0.35f, 0.5f);
+                SFX.Play(Sfx.Swoosh, 0.8f, 0.2f, transform.position);
+                if (anim) { anim.CrossFadeInFixedTime("Attack", 0.04f, 0, 0.35f); anim.speed = 2.2f; }
+                lunge = 0.35f;
+                for (float t = 0; t < 0.2f; t += Time.deltaTime) { lunge = Mathf.Lerp(0.35f, -0.1f, t / 0.2f); yield return null; }
+            }
+            yield return new WaitForSeconds(0.45f);
+            EndAttack();
+        }
+
+        // 3) lunge: crouch, then fly at the target along a marked lane and crash down
+        IEnumerator BossLunge()
+        {
+            attacking = true;
+            atkReady = Time.time + cooldown;
+            if (target == null) { EndAttack(); yield break; }
+            Vector3 d = target.transform.position - transform.position; d.y = 0;
+            Vector3 dir = d.normalized;
+            float len = Mathf.Clamp(d.magnitude + 1.5f, 6f, 18f);
+            float wind = Enraged ? 0.45f : 0.62f;
+            transform.rotation = Quaternion.LookRotation(dir);
+            Tele.Line(transform.position, dir, len + 2f, 2.6f, wind);
+            AnimAttack(wind);
+            for (float t = 0; t < wind; t += Time.deltaTime)
+            {
+                float k = t / wind;
+                body.localScale = new Vector3(1f + 0.08f * k, 1f - 0.15f * k, 1f + 0.08f * k);
+                lunge = -0.35f * k;
+                yield return null;
+            }
+            body.localScale = new Vector3(0.92f, 1.12f, 0.92f);
+            SFX.Play(Sfx.Leap, 0.8f, 0.1f, transform.position);
+            SFX.Play(Sfx.Swoosh, 1f, 0.05f, transform.position);
+            VFX.Burst(transform.position + Vector3.up * 0.3f, new Color(0.62f, 0.54f, 0.42f), 20, 4f, 0.35f, 0.6f, 0.4f, true);
+            float T = Mathf.Clamp(len / 24f, 0.35f, 0.7f);
+            extraVel = dir * (len / T);
+            yVel = 25f * T * 0.5f;
+            var hit = new HashSet<Health>();
+            float trail = 0f;
+            for (float t = 0; t < T && !dying; t += Time.deltaTime)
+            {
+                trail -= Time.deltaTime;
+                if (trail <= 0f)
+                {
+                    trail = 0.035f;
+                    VFX.Burst(transform.position + Vector3.up * 1.6f, new Color(0.75f, 0.7f, 1f, 0.7f), 3, 0.6f, 0.45f, 0.3f, 0f);
+                }
+                Tele.Blast(transform.position + dir * 1.2f, 1.6f, damage * 1.3f, hp, 12f, 4f, hit);
+                yield return null;
+            }
+            extraVel = Vector3.zero;
+            if (!dying)
+            {
+                Vector3 p = transform.position + dir * 1.5f;
+                VFX.Slash(transform.position, dir, new Color(1f, 0.9f, 0.4f), 3.2f);
+                VFX.Slash(transform.position, dir, new Color(0.8f, 0.7f, 1f), 2.8f, true);
+                VFX.Ring(p, new Color(0.8f, 0.7f, 1f));
+                Tele.Blast(p, 3.2f, damage * 0.9f, hp, 10f, 3f, hit);
+                Juice.LightFlash(p + Vector3.up, new Color(0.85f, 0.75f, 1f), 9f, 10f, 0.35f);
+                Juice.Splat(p, new Color(0.15f, 0.11f, 0.08f), 1.6f);
+                SFX.Play(Sfx.MeleeHit, 1f, 0.05f, p);
+                Tele.Shake(p, 0.5f, 20f);
+            }
+            body.localScale = Vector3.one;
+            yield return new WaitForSeconds(Enraged ? 0.45f : 0.75f);  // stuck after landing: punish window
+            EndAttack();
         }
 
         IEnumerator Attack()
@@ -422,6 +622,7 @@ namespace Relict
                 {
                     VFX.Slash(transform.position + transform.forward * 0.6f, transform.forward, new Color(1f, 0.9f, 0.4f), 2.6f);
                     Combat.Melee(transform.position, transform.forward, range + 0.5f, 140f, damage, hp, 10f);
+                    Tele.Shake(transform.position, 0.2f, 10f);
                 }
                 else if (target != null && !target.Dead)
                 {
