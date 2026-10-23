@@ -42,6 +42,9 @@ namespace Relict
         float squash, squashVel, lean, flipT = -1f, jumpT = -9f, landUntil, releaseUntil, upperW;
         bool hasJumpStates, hasUpper, wasGrounded = true;
         string upperState = "";
+        // dodge visuals: 0 = none, 1 = authored roll clip (frog), 2 = procedural tuck somersault, 3 = slide
+        int dodgeStyle;
+        float dodgeStart, dodgeDur, slideBlend, puffT;
         const float DrawClipLen = 1.55f;
         static readonly int UpperSpeedId = Animator.StringToHash("UpperSpeed");
         readonly HashSet<Health> slideHit = new HashSet<Health>();
@@ -165,6 +168,12 @@ namespace Relict
             bool grounded = cc.isGrounded;
             bool rolling = Time.time < rollUntil;
             if (sliding && !rolling) sliding = false;
+            if (!rolling && dodgeStyle != 0)
+            {
+                if (dodgeStyle == 2 || dodgeStyle == 1) { squash = -0.1f; squashVel = 0f; }
+                if (dodgeStyle == 3 && anim != null) anim.speed = 1f;
+                dodgeStyle = 0;
+            }
 
             // dodge charges refill
             if (dodgeMeter < dodgeCharges) dodgeMeter = Mathf.Min(dodgeCharges, dodgeMeter + dt / dodgeRecharge);
@@ -175,6 +184,12 @@ namespace Relict
                 Vector3 hv = Vector3.MoveTowards(new Vector3(vel.x, 0, vel.z), dashDir * keep, (sliding ? 9f : 14f) * dt);
                 vel = hv;
                 if (sliding) SlideHits();
+                puffT -= dt;
+                if (puffT <= 0f && cc.isGrounded)
+                {
+                    puffT = sliding ? 0.04f : 0.07f;
+                    VFX.Burst(transform.position + Vector3.up * 0.1f - dashDir * 0.3f, new Color(0.72f, 0.66f, 0.52f, 0.8f), sliding ? 3 : 2, 1.2f, sliding ? 0.22f : 0.16f, 0.45f, 0.1f);
+                }
             }
             else if (!leaping && !plunging)
             {
@@ -361,8 +376,33 @@ namespace Relict
                 else { float e = flipT * flipT * (3f - 2f * flipT); rot = rot * Quaternion.Euler(360f * e, 0f, 0f); }
             }
             Vector3 pivot = new Vector3(0f, 0.75f, 0f);
+            Vector3 drop = Vector3.zero;
+            bool rollingNow = Time.time < rollUntil;
+
+            // slide: lean back and sink, eased in and out
+            slideBlend = Mathf.MoveTowards(slideBlend, rollingNow && dodgeStyle == 3 ? 1f : 0f, dt * 9f);
+            if (slideBlend > 0f)
+            {
+                Vector3 axis = transform.InverseTransformDirection(Vector3.Cross(Vector3.up, dashDir));
+                if (axis.sqrMagnitude < 0.01f) axis = Vector3.right;
+                rot = Quaternion.AngleAxis(-22f * slideBlend, axis.normalized) * rot;
+                drop += Vector3.down * 0.18f * slideBlend;
+            }
+
+            // somersault: one full turn around the axis perpendicular to the dodge direction
+            if (rollingNow && dodgeStyle == 2 && dodgeDur > 0f)
+            {
+                float k = Mathf.Clamp01((Time.time - dodgeStart) / dodgeDur);
+                float e = k * k * (3f - 2f * k);
+                Vector3 axis = transform.InverseTransformDirection(Vector3.Cross(Vector3.up, dashDir));
+                if (axis.sqrMagnitude < 0.01f) axis = Vector3.right;
+                rot = Quaternion.AngleAxis(360f * e, axis.normalized) * rot;
+                pivot = new Vector3(0f, 0.5f, 0f);
+                drop += Vector3.down * 0.22f * Mathf.Sin(Mathf.PI * k);
+            }
+
             model.localRotation = modelBaseRot * rot;
-            model.localPosition = modelBasePos + pivot - rot * pivot;
+            model.localPosition = modelBasePos + pivot - rot * pivot + drop;
         }
 
         // ---------- bow upper-body layer ----------
@@ -392,8 +432,36 @@ namespace Relict
             rollUntil = Time.time + (slide ? 0.6f : 0.38f);
             vel = dir * (slide ? 14f : 11.5f);
             slideHit.Clear();
-            if (kind == HeroKind.Frog) { Restart("Roll"); anim.speed = slide ? 1.2f : 1.7f; }
-            else { Restart(slide ? "Run" : "Jump", 0.04f); anim.speed = slide ? 1.8f : 2.2f; }
+            dodgeStart = Time.time;
+            dodgeDur = rollUntil - Time.time;
+            if (anim != null)
+            {
+                if (slide && hasJumpStates)
+                {
+                    // low crouch pose frozen for the slide, body leans back in LateUpdate
+                    dodgeStyle = 3;
+                    cur = "JumpLand";
+                    anim.CrossFadeInFixedTime("JumpLand", 0.06f, 0, 0.2f);
+                    anim.speed = 0.05f;
+                }
+                else if (kind == HeroKind.Frog)
+                {
+                    // the tumble in sword_roll is 0.2s..1.0s: fit exactly that into the dodge window
+                    dodgeStyle = 1;
+                    cur = "Roll";
+                    anim.CrossFadeInFixedTime("Roll", 0.04f, 0, 0.2f);
+                    anim.speed = 0.85f / dodgeDur;
+                    landUntil = rollUntil + 0.1f;
+                }
+                else
+                {
+                    // gecko: tucked somersault in the dodge direction (forward, back or sideways)
+                    dodgeStyle = 2;
+                    if (hasJumpStates) { cur = "JumpAir"; anim.CrossFadeInFixedTime("JumpAir", 0.05f, 0, 0f); anim.speed = 1f; }
+                    else { Restart("Jump", 0.04f); anim.speed = 2.2f; }
+                    landUntil = rollUntil + 0.06f;
+                }
+            }
             SFX.Play(Sfx.Swoosh, 0.7f, 0.2f);
             VFX.Burst(transform.position + Vector3.up * 0.15f, new Color(0.75f, 0.7f, 0.55f), slide ? 18 : 10, 2.5f, 0.18f, 0.5f, 0.3f);
         }
