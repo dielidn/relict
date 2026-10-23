@@ -34,6 +34,14 @@ namespace Relict
         public float gatesFallAt = 480f;    // all barriers drop by themselves
 
         public enum State { Select, Playing, Paused, Result }
+        public enum GameMode { BossHunt, Duel }
+        // BossHunt: no rival, the run is won by killing the arena boss. Duel: last champion standing.
+        public static GameMode Mode
+        {
+            get => (GameMode)PlayerPrefs.GetInt("relict_mode", 0);
+            set { PlayerPrefs.SetInt("relict_mode", (int)value); PlayerPrefs.Save(); }
+        }
+        public static bool Hunt => Mode == GameMode.BossHunt;
         public State state = State.Select;
         public bool Playing => state == State.Playing;
 
@@ -204,7 +212,8 @@ namespace Relict
             LockCursor(true);
             SpawnWorld();
             Toast("Зачищайте зоны — барьеры лиан откроют путь к арене");
-            Toast("Соперник идёт к арене с другой стороны");
+            if (Hunt) Toast("Цель: доберитесь до арены и убейте Богомола-Стража");
+            else Toast("Соперник идёт к арене с другой стороны");
         }
 
         void LockCursor(bool on)
@@ -237,7 +246,11 @@ namespace Relict
         {
             for (int a = 0; a < 2; a++) for (int z = 0; z < 3; z++) zoneMobs[a, z] = new List<EnemyAI>();
             var arts = ArtifactNames.OrderBy(_ => Random.value).ToList();
-            for (int arm = 0; arm < 2; arm++)
+            Rival = null;
+            cleared[0] = cleared[1] = 0;
+            int arms = Hunt ? 1 : 2;
+            if (Hunt) cleared[1] = 3;   // nobody advances along the second arm
+            for (int arm = 0; arm < arms; arm++)
             {
                 // zone 1: ant packs
                 Pack(arm, 0, ZonePoint(arm, 136f, Random.Range(-4f, 4f)), 3);
@@ -264,6 +277,7 @@ namespace Relict
                 Pickup.Heal(LGeo.OnGround(new Vector3(Mathf.Cos(a), 0, Mathf.Sin(a)) * 22f), 50);
             }
 
+            if (Hunt) return;
             // rival champion: the other hero type
             bool rivalMelee = chosen == HeroKind.Gecko;
             var model = rivalMelee ? rivalFrogModel : rivalModel;
@@ -304,7 +318,7 @@ namespace Relict
             if (zoneCheck <= 0f)
             {
                 zoneCheck = 0.4f;
-                for (int arm = 0; arm < 2; arm++)
+                for (int arm = 0; arm < (Hunt ? 1 : 2); arm++)
                 {
                     int z = cleared[arm];
                     if (z >= 3) continue;
@@ -315,7 +329,7 @@ namespace Relict
                 if (!GatesForced && Elapsed >= gatesFallAt)
                 {
                     GatesForced = true;
-                    for (int arm = 0; arm < 2; arm++) while (cleared[arm] < 3) OpenGate(arm, cleared[arm], true);
+                    for (int arm = 0; arm < (Hunt ? 1 : 2); arm++) while (cleared[arm] < 3) OpenGate(arm, cleared[arm], true);
                     Toast("Джунгли расступились: все барьеры пали!");
                 }
             }
@@ -454,6 +468,11 @@ namespace Relict
                     Toast("Соперник забрал Сердце Реликта!");
                 }
                 else Toast("Богомол-Страж повержен");
+                if (Hunt && byHero)
+                {
+                    Banner("ПОБЕДА", "Богомол-Страж повержен — джунгли ваши");
+                    StartCoroutine(EndAfter(3.5f, true, "Богомол-Страж повержен. Сердце Реликта добыто!"));
+                }
             }
             else if (e.mini && e.arm == 0) Toast("Богомол-Жнец повержен");
         }

@@ -211,7 +211,7 @@ namespace Relict
             // logo
             Txt(new Rect(56 * s, 40 * s, 700 * s, 100 * s), "РЕЛИКТ", St('h', 96f), new Color(0.86f, 1f, 0.62f), true);
             RR(new Rect(60 * s, 146 * s, 64 * s, 4 * s), CAccent, 2 * s);
-            Caption(new Rect(136 * s, 136 * s, 600 * s, 24 * s), "Дуэль на Л-карте · PvPvE · прототип", new Color(0.8f, 0.86f, 0.76f));
+            Caption(new Rect(136 * s, 136 * s, 600 * s, 24 * s), Hunt ? "Охота на босса · PvE · прототип" : "Дуэль на Л-карте · PvPvE · прототип", new Color(0.8f, 0.86f, 0.76f));
 
             // player chip (top right)
             float cw = 430 * s, cx = W - cw - 48 * s, cy = 44 * s;
@@ -262,6 +262,15 @@ namespace Relict
 
             // hero cards (bottom)
             float hw = 440 * s, hh = 330 * s, gap = 28 * s, hy = H - hh - 44 * s;
+
+            // game mode switch above the hero cards
+            float mw = 300 * s, mh = 50 * s, my = hy - mh - 18 * s;
+            Caption(new Rect(W * 0.5f - mw - 6 * s, my - 26 * s, 2 * mw + 12 * s, 20 * s), "Режим", CAccent);
+            if (Button(new Rect(W * 0.5f - mw - 6 * s, my, mw, mh), "Охота на босса", Hunt ? Btn.Primary : Btn.Ghost, true, 18f)) Mode = GameMode.BossHunt;
+            if (Button(new Rect(W * 0.5f + 6 * s, my, mw, mh), "Дуэль с соперником", Hunt ? Btn.Ghost : Btn.Primary, true, 18f)) Mode = GameMode.Duel;
+            Txt(new Rect(W * 0.5f - 400 * s, my + mh + 2 * s, 800 * s, 16 * s),
+                Hunt ? "Пройдите три зоны и убейте Богомола-Стража на арене" : "Соперник идёт навстречу — побеждает последний выживший",
+                St('r', 13f, TextAnchor.MiddleCenter), CMuted);
             DrawHeroCard(new Rect(W * 0.5f - hw - gap * 0.5f, hy, hw, hh), HeroKind.Frog, "Лягушка-древолаз", "Ближний бой",
                 new[] { 4, 4, 5, 1 }, new[] { new[] { "Q", "Прыжок по площади" }, new[] { "ЛКМ", "Серия, удар с неба" } });
             DrawHeroCard(new Rect(W * 0.5f + gap * 0.5f, hy, hw, hh), HeroKind.Gecko, "Геккон-лучник", "Дальний бой",
@@ -428,6 +437,9 @@ namespace Relict
                 zoneMobs[0, myZone].RemoveAll(e => e == null || e.Dying);
                 obj = "Зона " + (myZone + 1) + " из 3 · осталось врагов: " + zoneMobs[0, myZone].Count;
             }
+            else if (Hunt) obj = boss != null && !boss.Hp.Dead
+                ? (LGeo.Locate(Hero.transform.position, out _) == -1 ? "Арена: убейте Богомола-Стража" : "Идите на арену")
+                : "Богомол-Страж повержен";
             else if (Rival != null && !Rival.IsDead) obj = LGeo.Locate(Hero.transform.position, out _) == -1 ? "Арена: победите соперника" : "Идите на арену";
             else obj = "Соперник повержен";
             Txt(new Rect(W * 0.5f - 300 * s, 124 * s, 600 * s, 26 * s), obj, St('b', 17f, TextAnchor.MiddleCenter), CText, true);
@@ -555,6 +567,18 @@ namespace Relict
             float py = m.yMax + 14 * s;
             Caption(new Rect(card.x + 16 * s, py, 120 * s, 20 * s), "Вы", CAccent);
             Pips(new Rect(card.x + 120 * s, py + 7 * s, 110 * s, 7 * s), ZonesCleared(0), 3, CAccent);
+            if (Hunt)
+            {
+                bool bd = boss == null || boss.Hp.Dead;
+                Caption(new Rect(card.x + 16 * s, py + 28 * s, 120 * s, 20 * s), bd ? "Босс ✕" : "Босс", CDanger);
+                if (!bd)
+                {
+                    float k = Mathf.Clamp01(boss.Hp.hp / boss.Hp.max);
+                    RR(new Rect(card.x + 120 * s, py + 35 * s, 110 * s, 7 * s), new Color(1, 1, 1, 0.1f), 3 * s);
+                    RR(new Rect(card.x + 120 * s, py + 35 * s, 110 * s * k, 7 * s), CDanger, 3 * s);
+                }
+                return;
+            }
             int rz = Rival != null ? ZonesCleared(1) : 3;
             Caption(new Rect(card.x + 16 * s, py + 28 * s, 120 * s, 20 * s), Rival != null && Rival.IsDead ? "Соперник ✕" : "Соперник", CDanger);
             Pips(new Rect(card.x + 120 * s, py + 35 * s, 110 * s, 7 * s), rz, 3, CDanger);
