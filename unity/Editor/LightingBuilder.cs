@@ -185,7 +185,7 @@ namespace Relict.EditorTools
                 GameObjectUtility.SetStaticEditorFlags(t.gameObject, GameObjectUtility.GetStaticEditorFlags(t.gameObject) | StaticEditorFlags.ContributeGI);
                 var so = new SerializedObject(t);
                 var p = so.FindProperty("m_ScaleInLightmap");
-                if (p != null) { p.floatValue = 0.55f; so.ApplyModifiedPropertiesWithoutUndo(); }
+                if (p != null) { p.floatValue = 1f; so.ApplyModifiedPropertiesWithoutUndo(); }
             }
             log.AppendLine("lightmapped renderers: " + lm + " (lightmap UVs generated for " + reimported + " models), probe-lit casters: " + probe + ", excluded water: " + off);
         }
@@ -409,7 +409,7 @@ namespace Relict.EditorTools
             ls.realtimeGI = false;
             ls.lightmapper = LightingSettings.Lightmapper.ProgressiveGPU;
             ls.mixedBakeMode = MixedLightingMode.Shadowmask;
-            ls.lightmapResolution = 2.5f;
+            ls.lightmapResolution = 4f;
             ls.lightmapMaxSize = 2048;
             ls.lightmapPadding = 3;
             ls.lightmapCompression = LightmapCompression.NormalQuality;
@@ -428,7 +428,7 @@ namespace Relict.EditorTools
             EditorUtility.SetDirty(ls);
             Lightmapping.lightingSettings = ls;
             QualitySettings.shadowmaskMode = ShadowmaskMode.DistanceShadowmask;
-            log.AppendLine("bake: GPU progressive, shadowmask, 2.5 texels/unit, AO, 2 bounces");
+            log.AppendLine("bake: GPU progressive, shadowmask, 4 texels/unit, AO, 2 bounces");
         }
     }
 }
