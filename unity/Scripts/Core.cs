@@ -65,7 +65,7 @@ namespace Relict
         {
             string key = "L" + c + smooth + metal + emission;
             if (cache.TryGetValue(key, out var m) && m) return m;
-            m = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+            m = FromTemplate(emission.maxColorComponent > 0 ? "LitEmissive" : "Lit", "Universal Render Pipeline/Lit");
             m.SetColor("_BaseColor", c);
             m.SetFloat("_Smoothness", smooth);
             m.SetFloat("_Metallic", metal);
@@ -77,6 +77,18 @@ namespace Relict
             }
             cache[key] = m;
             return m;
+        }
+
+        // Runtime materials are cloned from templates in Resources/RelictShaders so their shaders and
+        // keyword variants ship with the build (Shader.Find returns null for stripped shaders in a player).
+        static Material FromTemplate(string template, string shader)
+        {
+            var t = Resources.Load<Material>("RelictShaders/" + template);
+            if (t) return new Material(t);
+            var sh = Shader.Find(shader);
+            if (sh == null) sh = Shader.Find("Universal Render Pipeline/Unlit");
+            if (sh == null) sh = Shader.Find("Sprites/Default");
+            return new Material(sh);
         }
 
         public static Texture2D Dot()
@@ -99,7 +111,7 @@ namespace Relict
         {
             string key = "A" + c;
             if (cache.TryGetValue(key, out var m) && m) return m;
-            m = new Material(Shader.Find("Universal Render Pipeline/Particles/Unlit"));
+            m = FromTemplate("Additive", "Universal Render Pipeline/Particles/Unlit");
             m.SetFloat("_Surface", 1f);
             m.SetFloat("_Blend", 2f);
             m.SetFloat("_SrcBlend", (float)UnityEngine.Rendering.BlendMode.SrcAlpha);
