@@ -22,7 +22,10 @@ namespace Relict.EditorTools
         const string KitDir = "Assets/RelictEnv/Prefabs/";
 
         static readonly string[] Plants = { "grass_medium_02", "grass_bermuda_01", "fern_02", "flower_heliophila", "celandine_01", "anthurium_botany_01", "periwinkle_plant", "weed_plant_02" };
-        static readonly string[] Stones = { "namaqualand_rocks_01", "namaqualand_stones_01", "cliff_side" };
+        static readonly string[] Stones = { "namaqualand_rocks_01", "namaqualand_stones_01" };
+        const int MaxVariants = 6;
+        // triangle budget per scattered instance (the scatter also uses generated mesh LODs at distance)
+        static int TriCap(string asset) => asset == "flower_heliophila" ? 20000 : asset == "anthurium_botany_01" ? 16000 : Stones.Contains(asset) ? 26000 : 8000;
 
         [MenuItem("Tools/Relict/Poly Haven/Import + Apply")]
         public static void Menu() { Debug.Log(Run()); }
@@ -91,7 +94,7 @@ namespace Relict.EditorTools
                 if (ti == null) continue;
                 string fn = Path.GetFileName(path).ToLower();
                 if (fn.Contains("_baked")) continue;
-                bool ground = path.Contains("brown_mud_leaves") || path.Contains("leaf_scattered_gravel");
+                bool ground = path.Contains("brown_mud_leaves") || path.Contains("leaf_scattered_gravel") || path.Contains("cliff_side");
                 if (fn.Contains("_nor_"))
                 {
                     ti.textureType = TextureImporterType.NormalMap;
@@ -217,9 +220,8 @@ namespace Relict.EditorTools
                 inst.transform.position = Vector3.zero; inst.transform.rotation = Quaternion.identity; inst.transform.localScale = Vector3.one;
                 var list = new List<Made>();
                 int i = 0;
-                foreach (var mf in inst.GetComponentsInChildren<MeshFilter>())
+                foreach (var mf in PickMeshes(inst, asset))
                 {
-                    if (mf.sharedMesh == null || mf.sharedMesh.vertexCount < 3) continue;
                     var mr = mf.GetComponent<MeshRenderer>();
                     var b = mr ? mr.bounds : new Bounds(mf.transform.position, Vector3.one);
                     var root = new GameObject("PH_" + asset + "_" + i);
@@ -247,6 +249,28 @@ namespace Relict.EditorTools
             return made;
         }
 
+        static int Tris(Mesh m) { long t = 0; for (int s = 0; s < m.subMeshCount; s++) t += m.GetIndexCount(s); return (int)(t / 3); }
+
+        // One mesh per variant: drop scatter helpers ("geometry", single blades), and for assets that ship
+        // their own _LODn meshes take the most detailed one that fits the budget.
+        static List<MeshFilter> PickMeshes(GameObject inst, string asset)
+        {
+            int cap = TriCap(asset);
+            var all = inst.GetComponentsInChildren<MeshFilter>()
+                .Where(m => m.sharedMesh != null && !m.name.Contains("geometry") && Tris(m.sharedMesh) >= 150)
+                .Where(m => { var r = m.GetComponent<Renderer>(); return r && r.bounds.size.y > 0.04f; })
+                .ToList();
+            var groups = all.GroupBy(m => System.Text.RegularExpressions.Regex.Replace(m.name, "_LOD\\d+$", ""));
+            var pick = new List<MeshFilter>();
+            foreach (var g in groups)
+            {
+                var ordered = g.OrderBy(m => { var mm = System.Text.RegularExpressions.Regex.Match(m.name, "_LOD(\\d+)$"); return mm.Success ? int.Parse(mm.Groups[1].Value) : 0; }).ToList();
+                var ok = ordered.FirstOrDefault(m => Tris(m.sharedMesh) <= cap);
+                if (ok != null) pick.Add(ok);
+            }
+            return pick.OrderByDescending(m => m.GetComponent<Renderer>().bounds.size.y).Take(MaxVariants).ToList();
+        }
+
         // height of the kit asset a layer used, to keep layer scale ranges meaningful
         static float KitHeight(string name)
         {
@@ -258,23 +282,21 @@ namespace Relict.EditorTools
             return b.size.y;
         }
 
-        static GameObject[] Sized(Dictionary<string, List<Made>> made, float targetHeight, bool byFootprint, params string[] assets)
+        static GameObject[] Sized(Dictionary<string, List<Made>> made, float target, bool byFootprint, params string[] assets)
         {
             var res = new List<GameObject>();
             foreach (var a in assets)
             {
-                if (!made.TryGetValue(a, out var list)) continue;
+                if (!made.TryGetValue(a, out var list) || list.Count == 0) continue;
+                var vals = list.Select(m => byFootprint ? m.size : m.height).OrderBy(v => v).ToList();
+                float median = vals[vals.Count / 2];
+                float k = target > 0f && median > 0.01f ? Mathf.Clamp(target / median, 0.2f, 8f) : 1f;
                 foreach (var m in list)
                 {
-                    float cur = byFootprint ? m.size : m.height;
-                    if (targetHeight > 0f && cur > 0.01f)
-                    {
-                        float k = Mathf.Clamp(targetHeight / cur, 0.2f, 6f);
-                        var root = PrefabUtility.LoadPrefabContents(AssetDatabase.GetAssetPath(m.prefab));
-                        root.transform.localScale = Vector3.one * k;
-                        PrefabUtility.SaveAsPrefabAsset(root, AssetDatabase.GetAssetPath(m.prefab));
-                        PrefabUtility.UnloadPrefabContents(root);
-                    }
+                    var root = PrefabUtility.LoadPrefabContents(AssetDatabase.GetAssetPath(m.prefab));
+                    root.transform.localScale = Vector3.one * k;
+                    PrefabUtility.SaveAsPrefabAsset(root, AssetDatabase.GetAssetPath(m.prefab));
+                    PrefabUtility.UnloadPrefabContents(root);
                     res.Add(m.prefab);
                 }
             }
@@ -294,10 +316,10 @@ namespace Relict.EditorTools
                     GameObject[] np = null;
                     switch (L.name)
                     {
-                        case "grass": np = Sized(made, KitHeight("Grass_Clump"), false, "grass_medium_02", "grass_bermuda_01"); break;
+                        case "grass": np = Sized(made, KitHeight("Grass_Clump"), false, "grass_medium_02", "grass_bermuda_01"); break;   // bermuda: only real clumps survive the filter
                         case "ferns": np = Sized(made, KitHeight("Fern_Light"), false, "fern_02"); break;
                         case "flowers":
-                            np = Sized(made, KitHeight("Flower_RedRosette"), false, "flower_heliophila", "celandine_01", "anthurium_botany_01", "periwinkle_plant")
+                            np = Sized(made, KitHeight("Flower_RedRosette"), false, "celandine_01", "periwinkle_plant")
                                 .Concat(new[] { Kit("Flower_RedRosette"), Kit("Mushroom_Pair") }.Where(x => x)).ToArray();
                             break;
                         case "bushes":
@@ -310,6 +332,16 @@ namespace Relict.EditorTools
                         case "pebbles": np = Sized(made, 0.5f, true, "namaqualand_stones_01"); break;
                     }
                     if (np != null && np.Length > 0) { L.prefabs = np; log.AppendLine("layer " + L.name + " → " + np.Length + " prefabs"); }
+                    if (L.name == "stepping stones" || L.name == "pebbles") L.lodNear = Mathf.Max(L.lodNear, 2);   // scans are very dense
+                }
+                // showcase flowers at real size, sparse: anthurium and heliophila are heavy scans
+                var big = Sized(made, 0f, false, "anthurium_botany_01", "flower_heliophila");
+                if (big.Length > 0)
+                {
+                    var layers = scatter.layers.Where(x => x.name != "big flowers").ToList();
+                    layers.Add(new FoliageScatter.Layer { name = "big flowers", prefabs = big, count = 450, minE = -12f, maxE = 1f, minPath = 2f, scale = new Vector2(1.2f, 2.2f), drawDistance = 50f, lodNear = 1, lodStep = 8f });
+                    scatter.layers = layers.ToArray();
+                    log.AppendLine("layer big flowers → " + big.Length + " prefabs");
                 }
                 EditorUtility.SetDirty(scatter);
             }
@@ -320,12 +352,12 @@ namespace Relict.EditorTools
             {
                 foreach (var l in t.terrainData.terrainLayers)
                 {
-                    string asset = l.name == "L_Litter" ? "brown_mud_leaves_01" : l.name == "L_Dirt" ? "leaf_scattered_gravel" : null;
+                    string asset = l.name == "L_Litter" ? "brown_mud_leaves_01" : l.name == "L_Dirt" ? "leaf_scattered_gravel" : l.name == "L_Rock" ? "cliff_side" : null;
                     if (asset == null || Tex(asset, "diff") == null) continue;
                     l.diffuseTexture = AssetDatabase.LoadAssetAtPath<Texture2D>(Tex(asset, "diff"));
                     var nor = Tex(asset, "nor");
                     if (nor != null) { l.normalMapTexture = AssetDatabase.LoadAssetAtPath<Texture2D>(nor); l.normalScale = 1f; }
-                    l.tileSize = new Vector2(3.5f, 3.5f);
+                    l.tileSize = asset == "cliff_side" ? new Vector2(9f, 9f) : new Vector2(3.5f, 3.5f);
                     l.smoothness = 0.08f;
                     EditorUtility.SetDirty(l);
                     log.AppendLine("terrain layer " + l.name + " → " + asset);
