@@ -15,9 +15,9 @@ namespace Relict.EditorTools
         const string SourceDir = "C:/Users/AndreyD/Documents/relict/asset/hdri";
         const string SkyDir = "Assets/_Relict/Art/Sky";
         const float SunClamp = 24f;          // radiance the sun disc is clamped to in the sky texture (keeps ambient sane)
-        const float TargetAmbient = 0.55f;   // diffuse sky irradiance / pi the scene is normalised to
+        const float TargetAmbient = 0.62f;   // diffuse sky irradiance / pi the scene is normalised to
         const float SunWorldAzimuth = 45f;   // put the sun over +X +Z: in front of the players on both arms
-        const float SunMinIntensity = 2.8f;  // the HDRI's own sun is weak (partly cloudy); keep shadows readable
+        const float SunMinIntensity = 3.6f;  // the HDRI's own sun is weak (partly cloudy); keep shadows readable
         const float SunSoftAngle = 2.5f;     // degrees: penumbra of baked shadows
 
         [MenuItem("Tools/Relict/Lighting/HDRI Setup + Bake")]
@@ -154,7 +154,7 @@ namespace Relict.EditorTools
             // --- sun ---
             var sun = Object.FindObjectsByType<Light>().First(l => l.type == LightType.Directional);
             sun.transform.rotation = Quaternion.LookRotation(-sunWorld);
-            sun.color = sunCol;
+            sun.color = Color.Lerp(sunCol, new Color(1f, 0.9f, 0.74f), 0.55f);   // warm, sunny
             sun.intensity = sunI;
             sun.shadows = LightShadows.Soft;
             sun.shadowStrength = 1f;
@@ -177,30 +177,42 @@ namespace Relict.EditorTools
                 EditorUtility.SetDirty(urp);
             }
 
-            // --- haze in the colour of the HDRI horizon, lighter than the misty preset ---
+            // --- light sky-blue haze (not grey): only far distances fade ---
             var fogCol = horizon * k;
             float fm = Mathf.Max(fogCol.r, Mathf.Max(fogCol.g, fogCol.b));
-            if (fm > 1f) fogCol /= fm;
+            if (fm > 0f) fogCol /= fm;
+            fogCol = Color.Lerp(fogCol, new Color(0.62f, 0.78f, 0.97f), 0.6f) * 0.92f;
             RenderSettings.fogColor = new Color(fogCol.r, fogCol.g, fogCol.b, 1f);
             RenderSettings.fogMode = FogMode.ExponentialSquared;
-            RenderSettings.fogDensity = 0.0075f;
+            RenderSettings.fogDensity = 0.0042f;
 
-            // --- atmosphere: subtle ground haze, beams follow the new sun ---
+            // --- ground haze almost off: it was what made the frame grey ---
             var mist = Object.FindAnyObjectByType<MistField>();
-            if (mist) { mist.alpha = 0.12f; mist.material.SetColor("_BaseColor", Color.Lerp(RenderSettings.fogColor, Color.white, 0.35f)); EditorUtility.SetDirty(mist); EditorUtility.SetDirty(mist.material); }
+            if (mist) { mist.alpha = 0.05f; mist.material.SetColor("_BaseColor", new Color(0.9f, 0.95f, 1f)); EditorUtility.SetDirty(mist); EditorUtility.SetDirty(mist.material); }
             var beams = GameObject.Find("Sunbeams");
             if (beams) Object.DestroyImmediate(beams);
 
-            // --- grading: neutral, true to the HDRI ---
+            // --- grading: sunny and cheerful ---
             var vol = Object.FindObjectsByType<Volume>().FirstOrDefault(v => v.isGlobal);
             if (vol && vol.sharedProfile)
             {
                 var p = vol.sharedProfile;
+                T Get<T>() where T : VolumeComponent { if (!p.TryGet<T>(out var c)) c = p.Add<T>(true); c.active = true; return c; }
                 if (p.TryGet<SplitToning>(out var st)) st.active = false;
-                if (p.TryGet<WhiteBalance>(out var wb)) { wb.temperature.Override(0f); wb.tint.Override(0f); }
+                Get<Tonemapping>().mode.Override(TonemappingMode.ACES);
+                var ca = Get<ColorAdjustments>();
+                ca.postExposure.Override(0.45f);
+                ca.contrast.Override(14f);
+                ca.saturation.Override(24f);
+                ca.colorFilter.Override(new Color(1f, 0.985f, 0.95f));
+                var wb = Get<WhiteBalance>(); wb.temperature.Override(12f); wb.tint.Override(4f);
+                var smh = Get<ShadowsMidtonesHighlights>();
+                smh.shadows.Override(new Vector4(0.98f, 1.0f, 1.06f, 0.06f));     // lifted, slightly sky-tinted shadows
+                smh.midtones.Override(new Vector4(1.03f, 1.0f, 0.95f, 0.03f));    // warm mids
+                smh.highlights.Override(new Vector4(1.04f, 1.01f, 0.93f, 0.04f)); // golden highlights
                 if (p.TryGet<LiftGammaGain>(out var lgg)) lgg.active = false;
-                if (p.TryGet<ColorAdjustments>(out var ca)) { ca.postExposure.Override(0.1f); ca.contrast.Override(10f); ca.saturation.Override(6f); ca.colorFilter.Override(Color.white); }
-                if (p.TryGet<Bloom>(out var bl)) { bl.threshold.Override(1.0f); bl.intensity.Override(0.4f); bl.tint.Override(Color.white); }
+                var bl = Get<Bloom>(); bl.threshold.Override(0.9f); bl.intensity.Override(0.65f); bl.scatter.Override(0.72f); bl.tint.Override(new Color(1f, 0.93f, 0.8f));
+                var vg = Get<Vignette>(); vg.intensity.Override(0.16f); vg.smoothness.Override(0.45f);
                 EditorUtility.SetDirty(p);
             }
 
