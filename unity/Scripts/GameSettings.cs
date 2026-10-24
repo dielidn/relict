@@ -88,6 +88,9 @@ namespace Relict
             // baked shadows beyond the realtime shadow distance; low quality uses baked shadows for statics only
             QualitySettings.shadowmaskMode = q == 2 ? ShadowmaskMode.Shadowmask : ShadowmaskMode.DistanceShadowmask;
             MistField.Density = q == 0 ? 1f : q == 1 ? 0.75f : 0.5f;
+            var sun = RenderSettings.sun;
+            var lad = sun ? sun.GetComponent<UniversalAdditionalLightData>() : null;
+            if (lad) lad.softShadowQuality = q == 0 ? SoftShadowQuality.High : q == 1 ? SoftShadowQuality.Medium : SoftShadowQuality.Low;
             FoliageScatter.Density = q == 0 ? 1f : q == 1 ? 0.7f : 0.45f;
             FoliageScatter.DistanceMul = q == 0 ? 1f : q == 1 ? 0.8f : 0.6f;
             if (!Mathf.Approximately(lastDensity, FoliageScatter.Density))

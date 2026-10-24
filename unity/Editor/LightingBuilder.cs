@@ -305,15 +305,7 @@ namespace Relict.EditorTools
                 float n = Fbm(u * 3f, v * 2f);
                 return edgeX * bottom * top * Mathf.Lerp(0.35f, 1.1f, n);
             });
-            var beamTex = SaveTexture("Sunbeam", 64, 128, (u, v) =>
-            {
-                float across = Mathf.Pow(Mathf.Sin(Mathf.PI * u), 2.2f);
-                float streaks = 0.65f + 0.35f * Mathf.PerlinNoise(u * 9f, 0.5f);
-                float along = Mathf.SmoothStep(0f, 1f, v * 3f) * Mathf.SmoothStep(0f, 1f, (1f - v) * 1.4f);
-                return across * streaks * along;
-            });
             var mistMat = SaveParticleMaterial("Mist", mistTex, new Color(0.86f, 0.9f, 0.88f, 1f), false);
-            var beamMat = SaveParticleMaterial("Sunbeam", beamTex, new Color(1f, 0.88f, 0.66f, 1f), true);
 
             var old = GameObject.Find("Atmosphere");
             if (old) Object.DestroyImmediate(old);
@@ -321,49 +313,7 @@ namespace Relict.EditorTools
             var mist = root.AddComponent<MistField>();
             mist.material = mistMat;
 
-            // sunbeams leaning along the sun direction, scattered over the corridor
-            var beams = new GameObject("Sunbeams").transform;
-            beams.SetParent(root.transform, false);
-            Vector3 toSun = -(Quaternion.Euler(SunEuler) * Vector3.forward);
-            var quadMesh = Resources.GetBuiltinResource<UnityEngine.Mesh>("Quad.fbx");
-            var rng = new System.Random(11);
-            int count = 0;
-            for (int arm = 0; arm < 2; arm++)
-                for (float t = 45f; t < 155f; t += 9f)
-                {
-                    float hw = LGeo.HalfWidthAt(t);
-                    float lat = ((float)rng.NextDouble() * 2f - 1f) * hw * 0.8f;
-                    var p = LGeo.OnGround(LGeo.ArmPoint(arm, t) + LGeo.ArmRight(arm, t) * lat);
-                    AddBeam(beams, p, toSun, quadMesh, beamMat, 2.5f + 3f * (float)rng.NextDouble(), 22f + 10f * (float)rng.NextDouble());
-                    count++;
-                }
-            for (int i = 0; i < 6; i++)
-            {
-                float a = i * 60f * Mathf.Deg2Rad;
-                AddBeam(beams, LGeo.OnGround(new Vector3(Mathf.Cos(a), 0, Mathf.Sin(a)) * 18f), toSun, quadMesh, beamMat, 4f, 30f);
-                count++;
-            }
-            log.AppendLine("atmosphere: mist field + " + count + " sunbeams");
-        }
-
-        static void AddBeam(Transform parent, Vector3 ground, Vector3 toSun, UnityEngine.Mesh quad, Material mat, float width, float length)
-        {
-            var b = new GameObject("Sunbeam");
-            b.transform.SetParent(parent, false);
-            b.transform.position = ground - Vector3.up * 0.5f;
-            b.transform.rotation = Quaternion.FromToRotation(Vector3.up, toSun);
-            var q = new GameObject("Quad");
-            q.transform.SetParent(b.transform, false);
-            q.transform.localPosition = new Vector3(0, length * 0.5f, 0);
-            q.transform.localScale = new Vector3(width, length, 1f);
-            q.AddComponent<MeshFilter>().sharedMesh = quad;
-            var r = q.AddComponent<MeshRenderer>();
-            r.sharedMaterial = mat;
-            r.shadowCastingMode = ShadowCastingMode.Off;
-            r.receiveShadows = false;
-            r.lightProbeUsage = LightProbeUsage.Off;
-            r.reflectionProbeUsage = ReflectionProbeUsage.Off;
-            b.AddComponent<Sunbeam>();
+            log.AppendLine("atmosphere: mist field");
         }
 
         // ---------- colour grading ----------

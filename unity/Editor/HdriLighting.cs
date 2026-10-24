@@ -17,6 +17,8 @@ namespace Relict.EditorTools
         const float SunClamp = 24f;          // radiance the sun disc is clamped to in the sky texture (keeps ambient sane)
         const float TargetAmbient = 0.55f;   // diffuse sky irradiance / pi the scene is normalised to
         const float SunWorldAzimuth = 45f;   // put the sun over +X +Z: in front of the players on both arms
+        const float SunMinIntensity = 2.8f;  // the HDRI's own sun is weak (partly cloudy); keep shadows readable
+        const float SunSoftAngle = 2.5f;     // degrees: penumbra of baked shadows
 
         [MenuItem("Tools/Relict/Lighting/HDRI Setup + Bake")]
         public static void SetupAndBakeMenu() { Setup(); LightingBuilder.Bake(); }
@@ -121,8 +123,7 @@ namespace Relict.EditorTools
             float k = TargetAmbient / Mathf.Max(1e-4f, (float)skyE / Mathf.PI);          // global exposure
             float sunLum = Lum(sunSum);
             Color sunCol = sunLum > 0f ? sunSum / Mathf.Max(sunSum.r, Mathf.Max(sunSum.g, sunSum.b)) : new Color(1f, 0.95f, 0.88f);
-            float sunI = Mathf.Clamp(k * sunLum / Mathf.PI, 1.2f, 5f);
-            if (sunLum <= 0f) sunI = 2.2f;
+            float sunI = Mathf.Clamp(k * sunLum / Mathf.PI, SunMinIntensity, 5f);
 
             // rotate the sky so the sun stands where we want it in the world
             float texAz = Mathf.Atan2(sunTex.z, sunTex.x) * Mathf.Rad2Deg;
@@ -155,7 +156,26 @@ namespace Relict.EditorTools
             sun.transform.rotation = Quaternion.LookRotation(-sunWorld);
             sun.color = sunCol;
             sun.intensity = sunI;
+            sun.shadows = LightShadows.Soft;
+            sun.shadowStrength = 1f;
+            sun.shadowAngle = SunSoftAngle;
+            var lad = sun.GetComponent<UniversalAdditionalLightData>();
+            if (lad) { lad.softShadowQuality = SoftShadowQuality.High; EditorUtility.SetDirty(lad); }
+            EditorUtility.SetDirty(sun);
             RenderSettings.sun = sun;
+
+            // soft realtime shadows in the pipeline asset
+            var urp = GraphicsSettings.currentRenderPipeline as UniversalRenderPipelineAsset;
+            if (urp)
+            {
+                var uso = new SerializedObject(urp);
+                var soft = uso.FindProperty("m_SoftShadowsSupported");
+                if (soft != null) soft.boolValue = true;
+                var q = uso.FindProperty("m_SoftShadowQuality");
+                if (q != null) q.intValue = (int)SoftShadowQuality.High;
+                uso.ApplyModifiedPropertiesWithoutUndo();
+                EditorUtility.SetDirty(urp);
+            }
 
             // --- haze in the colour of the HDRI horizon, lighter than the misty preset ---
             var fogCol = horizon * k;
@@ -168,12 +188,8 @@ namespace Relict.EditorTools
             // --- atmosphere: subtle ground haze, beams follow the new sun ---
             var mist = Object.FindAnyObjectByType<MistField>();
             if (mist) { mist.alpha = 0.12f; mist.material.SetColor("_BaseColor", Color.Lerp(RenderSettings.fogColor, Color.white, 0.35f)); EditorUtility.SetDirty(mist); EditorUtility.SetDirty(mist.material); }
-            foreach (var b in Object.FindObjectsByType<Sunbeam>())
-            {
-                b.transform.rotation = Quaternion.FromToRotation(Vector3.up, sunWorld);
-                b.alpha = 0.045f;
-                EditorUtility.SetDirty(b);
-            }
+            var beams = GameObject.Find("Sunbeams");
+            if (beams) Object.DestroyImmediate(beams);
 
             // --- grading: neutral, true to the HDRI ---
             var vol = Object.FindObjectsByType<Volume>().FirstOrDefault(v => v.isGlobal);
