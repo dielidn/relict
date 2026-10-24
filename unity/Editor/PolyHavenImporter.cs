@@ -320,10 +320,11 @@ namespace Relict.EditorTools
                         case "ferns": np = Sized(made, KitHeight("Fern_Light"), false, "fern_02"); break;
                         case "flowers":
                             np = Sized(made, KitHeight("Flower_RedRosette"), false, "celandine_01", "periwinkle_plant")
+                                .Concat(Sized(made, 0.5f, true, "weed_plant_02"))          // flat ground rosette: size by footprint
                                 .Concat(new[] { Kit("Flower_RedRosette"), Kit("Mushroom_Pair") }.Where(x => x)).ToArray();
                             break;
                         case "bushes":
-                            np = L.prefabs.Concat(Sized(made, KitHeight("Plant_SpikyYucca") * 0.8f, false, "weed_plant_02")).ToArray();
+                            np = L.prefabs.Where(x => x && !x.name.StartsWith("PH_")).ToArray();
                             break;
                         case "slopes":
                             np = L.prefabs.Where(p => p && p.name != "Fern_Light").Concat(made.ContainsKey("fern_02") ? made["fern_02"].Select(m => m.prefab) : new GameObject[0]).ToArray();
